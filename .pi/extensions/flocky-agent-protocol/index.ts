@@ -34,6 +34,34 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   let sending = false;
 
   pi.registerTool({
+    name: "flocky_complete",
+    label: "Flocky Complete",
+    description: "Record the one structured terminal outcome for the active delegated Flocky task.",
+    promptSnippet: "Record the validated structured completion of the active Flocky task",
+    promptGuidelines: ["For every delegated Flocky task, call flocky_complete exactly once after work and validation; do not claim a successful Flocky outcome in prose alone."],
+    parameters: Type.Object({
+      status: Type.String({ description: "success, partial, blocked, failed, or refused" }),
+      summary: Type.String(),
+      completed: Type.Array(Type.String()),
+      notCompleted: Type.Array(Type.String()),
+      validation: Type.Array(Type.String()),
+      reason: Type.String(),
+      safeState: Type.String(),
+      nextAction: Type.String(),
+    }),
+    async execute(_toolCallId, params) {
+      if (!store || !activeTaskId) throw new Error("flocky_complete requires an active delegated Flocky task");
+      if (!["success", "partial", "blocked", "failed", "refused"].includes(params.status)) throw new Error("Invalid Flocky completion status");
+      if (!params.summary.trim() || !params.safeState.trim() || !params.nextAction.trim()) throw new Error("summary, safeState, and nextAction are required");
+      if (params.status === "success" && (params.validation.length === 0 || params.notCompleted.length > 0)) throw new Error("success requires validation evidence and no remaining work");
+      const completion = { ...params, status: params.status as "success" | "partial" | "blocked" | "failed" | "refused" };
+      if (store.completionForTask(activeTaskId)) throw new Error("This Flocky task already has a completion record");
+      store.recordCompletion(activeTaskId, completion);
+      return { content: [{ type: "text", text: `Recorded ${completion.status} completion for ${activeTaskId}.` }], details: { taskId: activeTaskId, completion }, terminate: true };
+    },
+  });
+
+  pi.registerTool({
     name: "flocky_status",
     label: "Flocky Status",
     description: "Show non-secret Flocky protocol, task, and outbox diagnostic state for this agent.",
@@ -180,6 +208,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       activeTaskId = parsed.fields.task_id;
       latestAnswer = "";
       store.startTask(activeTaskId);
+      return { systemPrompt: `${event.systemPrompt}\n\nThis is an active delegated Flocky task. Before ending, call flocky_complete exactly once with the validated terminal outcome. A successful prose answer without flocky_complete will be reported as unverified partial.` };
     } else {
       activeTaskId = undefined;
       latestAnswer = "";
@@ -199,7 +228,10 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     const taskId = activeTaskId;
     activeTaskId = undefined;
     const answer = latestAnswer || "Task settled without a textual final response. Review the session transcript for details.";
-    const outcome = parseOutcome(answer);
+    const completion = store.completionForTask(taskId)?.payload;
+    const outcome = completion
+      ? { status: completion.status, declared: true, reason: completion.reason }
+      : { status: "partial", declared: false, reason: "Stream settled without calling flocky_complete; outcome is unverified." };
     store.settleTask(taskId, answer, outcome.status, outcome.reason);
 
     const task = parseEnvelope(findTaskRawMessage(ctx, taskId));
@@ -211,8 +243,10 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       ctx.ui.notify(`Cannot report ${taskId}: no configured route for ${recipient}`, "error");
       return;
     }
+    const structured = completion ? renderCompletion(completion) : "";
     const outcomeNote = outcome.declared ? "" : `\n\nFlocky note: ${outcome.reason}`;
-    const body = `Result from stream \`${agentId}\` for task ${taskId}:\n\n${answer}${outcomeNote}`;
+    const raw = answer ? `\n\nRaw assistant message:\n${answer}` : "";
+    const body = `Result from stream \`${agentId}\` for task ${taskId}:\n\n${structured || answer}${outcomeNote}${structured ? raw : ""}`;
     const payload = buildEnvelope({ type: "result", task_id: taskId, from: agentId, status: outcome.status }, body, secret);
     store.enqueueResult(taskId, recipient, transport, payload);
     await flushOutbox(ctx);
@@ -260,6 +294,11 @@ function loadConfig(cwd: string): Config {
   const path = join(cwd, "flocky.config.json");
   if (!existsSync(path)) throw new Error("missing flocky.config.json (copy flocky.config.example.json)");
   return JSON.parse(readFileSync(path, "utf8")) as Config;
+}
+
+function renderCompletion(completion: { status: string; summary: string; completed: string[]; notCompleted: string[]; validation: string[]; reason: string; safeState: string; nextAction: string }): string {
+  const list = (items: string[]) => items.length ? items.map((item) => `- ${item}`).join("\n") : "- none";
+  return `RESULT: ${completion.status.toUpperCase()}\nSummary: ${completion.summary}\nCompleted:\n${list(completion.completed)}\nNot completed:\n${list(completion.notCompleted)}\nValidation:\n${list(completion.validation)}\nReason: ${completion.reason || "none"}\nSafe state: ${completion.safeState}\nNext action: ${completion.nextAction}`;
 }
 
 function textContent(content: unknown): string {

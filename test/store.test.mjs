@@ -14,6 +14,8 @@ test("store deduplicates tasks and retains an outbox retry", () => {
     assert.equal(store.receiveTask(task), false);
     store.startTask("abc");
     store.settleTask("abc", "done", "blocked", "missing credential");
+    store.recordCompletion("abc", { status: "success", summary: "done" });
+    assert.equal(store.completionForTask("abc").payload.status, "success");
     store.recordDispatch("dispatch-1", "stream", "herdr", "do work", "signed task");
     assert.equal(store.dispatchForTask("dispatch-1").recipient, "stream");
     store.enqueueResult("abc", "owner", "telegram", "message");

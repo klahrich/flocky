@@ -22,6 +22,12 @@ export class FlockyStore {
         outcome_status TEXT,
         outcome_reason TEXT
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS completions (
+        task_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS delivery_attempts (
         id INTEGER PRIMARY KEY,
         outbox_id INTEGER NOT NULL,
@@ -85,6 +91,16 @@ export class FlockyStore {
 
   dispatchForTask(taskId) {
     return this.db.prepare("SELECT * FROM dispatches WHERE task_id = ?").get(taskId);
+  }
+
+  completionForTask(taskId) {
+    const row = this.db.prepare("SELECT * FROM completions WHERE task_id = ?").get(taskId);
+    return row ? { ...row, payload: JSON.parse(row.payload) } : null;
+  }
+
+  recordCompletion(taskId, completion) {
+    this.db.prepare("INSERT INTO completions (task_id, status, payload, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(task_id) DO NOTHING")
+      .run(taskId, completion.status, JSON.stringify(completion), Date.now());
   }
 
   recordDispatch(taskId, recipient, transport, body, payload) {
