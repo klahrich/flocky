@@ -112,11 +112,9 @@ async function showRoutes(ctx: any) {
 async function discoverHerdrRoutes(pi: ExtensionAPI, ctx: any) {
   requireTui(ctx, "/routes discover");
   if (process.env.HERDR_ENV !== "1") throw new Error("Herdr route discovery requires Pi to run inside Herdr");
-  const workspace = process.env.HERDR_WORKSPACE_ID;
-  if (!workspace) throw new Error("Current Herdr workspace ID is unavailable");
   const config = load(ctx.cwd);
-  const response = await herdr(pi, ["pane", "list", "--workspace", workspace]);
-  const panes = response?.result?.panes ?? [];
+  const workspaces = (await herdr(pi, ["workspace", "list"]))?.result?.workspaces ?? [];
+  const panes = (await Promise.all(workspaces.map(async (workspace: any) => ((await herdr(pi, ["pane", "list", "--workspace", workspace.workspace_id]))?.result?.panes ?? [])))).flat();
   let saved = 0;
   for (const [id, stream] of streamEntries(config)) {
     if (!stream.path) continue;

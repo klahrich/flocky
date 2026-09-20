@@ -26,7 +26,7 @@ node tools/set-stream.mjs --id landing --path ../landing --telegram-target @land
 node tools/set-stream.mjs --id landing --remove
 ```
 
-When Herdr is selected, onboarding scans only the owner’s current workspace for existing matching Pi panes. Each stream chosen for launch is created in its **own dedicated Herdr workspace**, never the owner workspace.
+When Herdr is selected, onboarding scans managed Herdr workspaces for existing matching Pi panes and asks before saving any match. Each stream chosen for launch is created in its **own dedicated Herdr workspace**, never the owner workspace.
 
 ## Manage configured streams and routes
 
@@ -45,6 +45,6 @@ When Herdr is selected, onboarding scans only the owner’s current workspace fo
 
 `/streams add` offers to attach the existing Git repository immediately. `/attach-stream <stream-id>` lets you preview and attach a previously registered stream. Attachment copies only Flocky-owned extension/skill files, generates stream-local configuration, and adds or updates a marked block in `AGENTS.md` without deleting existing project instructions.
 
-`/routes discover` inspects only the current Herdr workspace and always asks before saving a route. `/routes verify` checks saved Herdr pane routes without changing configuration.
+`/routes discover` scans managed Herdr workspaces for Pi panes whose repository CWD matches a configured stream, and always asks before saving a route. `/routes verify` checks saved Herdr pane routes without changing configuration.
 
 Copy the relevant template from `templates/` to the owner workspace and each stream repository. Stream repositories also need the protocol extension and a local `flocky.config.json` whose `runtime.agentId` matches that stream.
