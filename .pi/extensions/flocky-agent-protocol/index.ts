@@ -12,6 +12,7 @@ import { registerFlockyCommands } from "./commands";
 import { applyAttachment, planAttachment } from "./attachment.mjs";
 import { parseOutcome } from "./outcome.mjs";
 import { deliverWithFallback } from "./delivery.mjs";
+import { loadProjectEnv } from "./config.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -95,6 +96,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     try {
+      loadProjectEnv(ctx.cwd);
       await ensureOnboarded(pi, ctx);
       config = loadConfig(ctx.cwd);
       agentId = config.runtime?.agentId;
