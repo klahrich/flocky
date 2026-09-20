@@ -192,7 +192,9 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     if (text.trim()) latestAnswer = text.trim();
   });
 
-  pi.on("agent_settled", async (_event, ctx) => {
+  // Finalize at each low-level agent run. agent_settled waits until *all* queued
+  // prompts drain, which can otherwise overwrite a prior task's active ID.
+  pi.on("agent_end", async (_event, ctx) => {
     if (!store || !config || !agentId || !secret || !activeTaskId) return;
     const taskId = activeTaskId;
     activeTaskId = undefined;
