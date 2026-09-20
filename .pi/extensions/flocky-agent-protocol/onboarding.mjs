@@ -70,6 +70,10 @@ async function configureHerdrRoutes(pi, ctx, config) {
   if (!workspaceId) return;
   const listed = await herdr(pi, ["pane", "list", "--workspace", workspaceId]);
   const panes = listed?.result?.panes ?? [];
+  const ownerPane = panes.find((pane) => pane.pane_id === process.env.HERDR_PANE_ID && pane.agent === "pi" && samePath(pane.cwd, ctx.cwd));
+  if (ownerPane && await ctx.ui.confirm("Save the project-owner Herdr route?", `${ownerPane.pane_id} — ${ownerPane.cwd}`)) {
+    config.agents[config.project.id].routes = { herdr: routeFromPane(ownerPane) };
+  }
   const missing = [];
   for (const [id, agent] of Object.entries(config.agents)) {
     if (id === config.project.id) continue;

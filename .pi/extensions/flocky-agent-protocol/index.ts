@@ -9,6 +9,7 @@ import { sendAsTelegramUser } from "./transport.mjs";
 import { sendViaHerdr } from "./herdr.mjs";
 import { ensureOnboarded } from "./onboarding.mjs";
 import { registerFlockyCommands } from "./commands";
+import { applyAttachment, planAttachment } from "./attachment.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -65,6 +66,28 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
         content: [{ type: "text", text: `Task ${taskId} dispatched to ${params.stream} via ${selectedTransport} (${state}).` }],
         details: { taskId, stream: params.stream, transport: selectedTransport, deliveryStatus: state },
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "flocky_attach_stream",
+    label: "Attach Flocky Stream",
+    description: "Preview or attach an existing Git stream repository to the Flocky protocol framework.",
+    promptSnippet: "Attach a registered existing Git stream repository to Flocky",
+    promptGuidelines: ["Use flocky_attach_stream before dispatching to a newly registered stream so its Pi agent can receive signed tasks and return results."],
+    parameters: Type.Object({
+      stream: Type.String({ description: "Registered stream ID" }),
+      confirm: Type.Boolean({ description: "False returns the exact file-change plan; true applies that reviewed plan" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!config || !agentId) throw new Error("Flocky is not configured; complete onboarding first");
+      if (agentId !== config.project?.id) throw new Error("Only the project-owner agent can attach streams");
+      const plan = planAttachment({ ownerCwd: ctx.cwd, config, streamId: params.stream });
+      if (!params.confirm) {
+        return { content: [{ type: "text", text: `Attachment plan for ${params.stream}:\n${plan.actions.map((item: any) => `- ${item.action}: ${item.path}`).join("\n")}\n\nReview this plan, then call flocky_attach_stream with confirm=true.` }], details: { stream: params.stream, actions: plan.actions, applied: false } };
+      }
+      const applied = applyAttachment({ ownerCwd: ctx.cwd, config, streamId: params.stream });
+      return { content: [{ type: "text", text: `Attached ${params.stream} at ${applied.streamCwd}. Installed Flocky-owned files: ${applied.actions.map((item: any) => item.path).join(", ")}.` }], details: { stream: params.stream, actions: applied.actions, applied: true } };
     },
   });
 

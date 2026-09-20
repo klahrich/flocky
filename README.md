@@ -35,12 +35,15 @@ When Herdr is selected, onboarding scans only the owner’s current workspace fo
 /streams add
 /streams edit <stream-id>
 /streams remove <stream-id>
+/attach-stream <stream-id>
 
 /routes list
 /routes discover
 /routes verify
 /routes remove <stream-id> [herdr|telegram]
 ```
+
+`/streams add` offers to attach the existing Git repository immediately. `/attach-stream <stream-id>` lets you preview and attach a previously registered stream. Attachment copies only Flocky-owned extension/skill files, generates stream-local configuration, and adds or updates a marked block in `AGENTS.md` without deleting existing project instructions.
 
 `/routes discover` inspects only the current Herdr workspace and always asks before saving a route. `/routes verify` checks saved Herdr pane routes without changing configuration.
 

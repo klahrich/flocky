@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { applyAttachment, planAttachment } from "./attachment.mjs";
 
 type Agent = { path?: string; description?: string; routes?: { herdr?: any; telegram?: any } };
 type Config = { project: { id: string }; agents: Record<string, Agent> };
@@ -14,7 +15,22 @@ export function registerFlockyCommands(pi: ExtensionAPI) {
       if (command === "add") return addStream(ctx);
       if (command.startsWith("edit ")) return editStream(ctx, command.slice(5).trim());
       if (command.startsWith("remove ")) return removeStream(ctx, command.slice(7).trim());
-      throw new Error("Usage: /streams [list|add|edit <id>|remove <id>]");
+      throw new Error("Usage: /streams [list|add|edit <id>|remove <id>] (then /attach-stream <id>)");
+    },
+  });
+
+  pi.registerCommand("attach-stream", {
+    description: "Preview and attach an existing stream repository to Flocky",
+    handler: async (args, ctx) => {
+      requireTui(ctx, "/attach-stream");
+      const id = args.trim();
+      if (!id) throw new Error("Usage: /attach-stream <stream-id>");
+      const config = load(ctx.cwd);
+      const plan = planAttachment({ ownerCwd: ctx.cwd, config, streamId: id });
+      const preview = plan.actions.map((item: any) => `• ${item.action}: ${item.path}`).join("\n");
+      if (!await ctx.ui.confirm(`Attach ${id} to Flocky?`, `${preview}\n\nOnly Flocky-owned files will be created or updated.`)) return;
+      applyAttachment({ ownerCwd: ctx.cwd, config, streamId: id });
+      ctx.ui.notify(`Attached ${id} to Flocky. Start/reload Pi in that stream repository to activate it.`, "info");
     },
   });
 
@@ -49,7 +65,13 @@ async function addStream(ctx: any) {
   if (!path || !description) return;
   config.agents[id] = { path, description, routes: {} };
   save(ctx.cwd, config);
-  ctx.ui.notify(`Added stream ${id}`, "info");
+  ctx.ui.notify(`Registered stream ${id}`, "info");
+  if (!await ctx.ui.confirm(`Attach ${id} now?`, "Attach installs the Flocky extension, local config, and a managed AGENTS.md block in the existing stream repository.")) return;
+  const plan = planAttachment({ ownerCwd: ctx.cwd, config, streamId: id });
+  const preview = plan.actions.map((item: any) => `• ${item.action}: ${item.path}`).join("\n");
+  if (!await ctx.ui.confirm(`Apply attachment plan for ${id}?`, preview)) return;
+  applyAttachment({ ownerCwd: ctx.cwd, config, streamId: id });
+  ctx.ui.notify(`Attached ${id} to Flocky.`, "info");
 }
 
 async function editStream(ctx: any, id: string) {
