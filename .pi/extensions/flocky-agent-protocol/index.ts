@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildEnvelope, parseEnvelope, verifyEnvelope } from "./protocol.mjs";
@@ -9,6 +11,7 @@ import { ensureOnboarded } from "./onboarding.mjs";
 import { registerFlockyCommands } from "./commands";
 
 type Config = {
+  project?: { id?: string };
   runtime?: { agentId?: string };
   agents?: Record<string, { telegramTarget?: string; path?: string; routes?: { telegram?: { target?: string }; herdr?: { paneId?: string; workspaceId?: string; expectedCwd?: string; agent?: string } } }>;
   protocol?: { secretEnv?: string };
@@ -25,6 +28,45 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   let activeTaskId: string | undefined;
   let latestAnswer = "";
   let sending = false;
+
+  pi.registerTool({
+    name: "flocky_dispatch",
+    label: "Flocky Dispatch",
+    description: "Dispatch a signed durable task from the project owner to one configured stream agent.",
+    promptSnippet: "Dispatch a task to a configured Flocky stream agent",
+    promptGuidelines: ["Use flocky_dispatch to delegate repository work to a configured Flocky stream; do not manually compose Flocky envelopes."],
+    parameters: Type.Object({
+      stream: Type.String({ description: "Configured stream ID" }),
+      task: Type.String({ description: "Complete task instructions and acceptance criteria" }),
+      answerBack: Type.Optional(Type.Boolean({ description: "Whether the stream must report its final result to the owner; defaults to true" })),
+      transport: Type.Optional(Type.String({ description: "Optional configured transport override: herdr or telegram" })),
+      taskId: Type.Optional(Type.String({ description: "Reuse a prior task ID only to retry the exact same dispatch" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
+      if (agentId !== config.project?.id) throw new Error("Only the project-owner agent can dispatch Flocky tasks");
+      if (!config.agents?.[params.stream] || params.stream === agentId) throw new Error(`Unknown stream: ${params.stream}`);
+      const answerBack = params.answerBack ?? true;
+      const selectedTransport = params.transport ?? transportFor(config, params.stream);
+      if (selectedTransport !== "telegram" && selectedTransport !== "herdr") throw new Error("Transport must be herdr or telegram");
+      if (!routeFor(config, params.stream, selectedTransport)) throw new Error(`No ${selectedTransport} route is configured for ${params.stream}`);
+      const taskId = params.taskId ?? randomUUID();
+      const body = params.task.trim();
+      if (!body) throw new Error("Task instructions cannot be empty");
+      const payload = buildEnvelope({ type: "task", task_id: taskId, from: agentId, reply_to: agentId, answer_back: answerBack ? "yes" : "no" }, body, secret);
+      const prior = store.dispatchForTask(taskId);
+      if (prior && prior.payload !== payload) throw new Error(`Task ID ${taskId} already belongs to a different dispatch`);
+      store.recordDispatch(taskId, params.stream, selectedTransport, body, payload);
+      store.enqueueResult(taskId, params.stream, selectedTransport, payload);
+      await flushOutbox(ctx, signal);
+      const outbox = store.outboxForTask(taskId);
+      const state = outbox?.status ?? "pending";
+      return {
+        content: [{ type: "text", text: `Task ${taskId} dispatched to ${params.stream} via ${selectedTransport} (${state}).` }],
+        details: { taskId, stream: params.stream, transport: selectedTransport, deliveryStatus: state },
+      };
+    },
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     try {
@@ -120,7 +162,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     maybeCompact(ctx);
   });
 
-  async function flushOutbox(ctx: any) {
+  async function flushOutbox(ctx: any, signal?: AbortSignal) {
     if (!store || !config || sending) return;
     sending = true;
     try {
@@ -129,9 +171,9 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
         if (!route) { store.markRetry(item.id, `Missing ${item.transport} route for ${item.recipient}`); continue; }
         try {
           if (item.transport === "herdr") {
-            await sendViaHerdr({ cwd: ctx.cwd, route, text: item.payload, signal: ctx.signal });
+            await sendViaHerdr({ cwd: ctx.cwd, route, text: item.payload, signal: signal ?? ctx.signal });
           } else {
-            await sendAsTelegramUser({ cwd: ctx.cwd, config, target: route.target, text: item.payload, signal: ctx.signal });
+            await sendAsTelegramUser({ cwd: ctx.cwd, config, target: route.target, text: item.payload, signal: signal ?? ctx.signal });
           }
           store.markSent(item.id);
           ctx.ui.notify(`Reported task ${item.task_id} to ${item.recipient}`, "info");

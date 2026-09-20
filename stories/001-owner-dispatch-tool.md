@@ -1,6 +1,6 @@
 ---
-status: proposed
-stage: planned
+status: in-progress
+stage: implementation
 created: 2026-09-20
 updated: 2026-09-20
 system: protocol-and-dispatch

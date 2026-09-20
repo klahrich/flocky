@@ -20,6 +20,14 @@ export class FlockyStore {
         updated_at INTEGER NOT NULL,
         final_answer TEXT
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS dispatches (
+        task_id TEXT PRIMARY KEY,
+        recipient TEXT NOT NULL,
+        transport TEXT NOT NULL,
+        body TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS outbox (
         id INTEGER PRIMARY KEY,
         task_id TEXT NOT NULL UNIQUE,
@@ -61,6 +69,18 @@ export class FlockyStore {
       .run(Date.now(), taskId);
   }
 
+  dispatchForTask(taskId) {
+    return this.db.prepare("SELECT * FROM dispatches WHERE task_id = ?").get(taskId);
+  }
+
+  recordDispatch(taskId, recipient, transport, body, payload) {
+    this.db.prepare(`
+      INSERT INTO dispatches (task_id, recipient, transport, body, payload, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id) DO NOTHING
+    `).run(taskId, recipient, transport, body, payload, Date.now());
+  }
+
   enqueueResult(taskId, recipient, transport, payload) {
     const now = Date.now();
     this.db.prepare(`
@@ -68,6 +88,10 @@ export class FlockyStore {
       VALUES (?, ?, ?, ?, 'pending', ?)
       ON CONFLICT(task_id) DO NOTHING
     `).run(taskId, recipient, transport, payload, now);
+  }
+
+  outboxForTask(taskId) {
+    return this.db.prepare("SELECT * FROM outbox WHERE task_id = ?").get(taskId);
   }
 
   pendingOutbox() {
