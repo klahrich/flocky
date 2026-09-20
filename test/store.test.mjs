@@ -24,6 +24,7 @@ test("store deduplicates tasks and retains an outbox retry", () => {
     assert.equal(store.deliveryAttempts(outbox.id)[0].transport, "herdr");
     store.markSent(outbox.id, "telegram");
     assert.equal(store.pendingOutbox().length, 0);
+    assert.equal(store.statusSummary().taskCounts.find((row) => row.status === "settled").count, 1);
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

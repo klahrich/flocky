@@ -136,5 +136,12 @@ export class FlockyStore {
     return this.db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'settled'").get().count;
   }
 
+  statusSummary() {
+    const taskCounts = this.db.prepare("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status").all();
+    const outboxCounts = this.db.prepare("SELECT status, COUNT(*) AS count FROM outbox GROUP BY status").all();
+    const latestFailure = this.db.prepare("SELECT task_id, recipient, transport, last_error FROM outbox WHERE last_error IS NOT NULL ORDER BY id DESC LIMIT 1").get();
+    return { taskCounts, outboxCounts, latestFailure: latestFailure ?? null };
+  }
+
   close() { this.db.close(); }
 }

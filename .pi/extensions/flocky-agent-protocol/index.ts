@@ -34,7 +34,33 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   let sending = false;
 
   pi.registerTool({
-    name: "flocky_dispatch",
+    name: "flocky_status",
+    label: "Flocky Status",
+    description: "Show non-secret Flocky protocol, task, and outbox diagnostic state for this agent.",
+    promptSnippet: "Inspect Flocky protocol and delivery status",
+    promptGuidelines: ["Use flocky_status when diagnosing Flocky setup, a missing task, or an undelivered stream result."],
+    parameters: Type.Object({}),
+    async execute() {
+      const summary = store?.statusSummary();
+      const active = Boolean(store && config && agentId && secret);
+      const lines = [
+        `Protocol: ${active ? "active" : "inactive"}`,
+        `Agent ID: ${agentId ?? "unavailable"}`,
+        `Configuration: ${config ? "loaded" : "unavailable"}`,
+        `Protocol secret: ${secret ? "available" : "missing"}`,
+        `Database: ${store ? "open at .pi/flocky/flocky.db" : "unavailable"}`,
+      ];
+      if (summary) {
+        lines.push(`Tasks: ${summary.taskCounts.map((row: any) => `${row.status}=${row.count}`).join(", ") || "none"}`);
+        lines.push(`Outbox: ${summary.outboxCounts.map((row: any) => `${row.status}=${row.count}`).join(", ") || "none"}`);
+        if (summary.latestFailure) lines.push(`Latest delivery error: ${summary.latestFailure.task_id} → ${summary.latestFailure.recipient} via ${summary.latestFailure.transport}: ${summary.latestFailure.last_error}`);
+      }
+      return { content: [{ type: "text", text: lines.join("\n") }], details: { active, agentId, summary } };
+    },
+  });
+
+  pi.registerTool({
+    name: "flocky_dispatch", 
     label: "Flocky Dispatch",
     description: "Dispatch a signed durable task from the project owner to one configured stream agent.",
     promptSnippet: "Dispatch a task to a configured Flocky stream agent",
