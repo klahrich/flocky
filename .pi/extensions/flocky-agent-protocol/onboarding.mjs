@@ -57,7 +57,10 @@ export async function ensureOnboarded(pi, ctx) {
 async function collectTelegramRoutes(ctx, config) {
   for (const [id, agent] of Object.entries(config.agents)) {
     const target = await ctx.ui.input(`Telegram target for ${id}`, `@${id}_bot (leave blank to configure later)`);
-    if (target?.trim()) agent.routes.telegram = { target: target.trim() };
+    if (target?.trim()) {
+      agent.routes ??= {};
+      agent.routes.telegram = { target: target.trim() };
+    }
   }
 }
 
