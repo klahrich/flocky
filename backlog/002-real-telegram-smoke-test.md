@@ -1,5 +1,5 @@
 ---
-status: backlog
+status: completed
 priority: high
 created: 2026-09-20
 system: operational-validation
@@ -35,6 +35,11 @@ A human-approved harmless task completes from owner Pi to stream Pi and back thr
 - Owner receives the matching signed result with an accurate status.
 - No duplicate messages arise from bridge polling.
 - Fixture repositories and credential files remain uncommitted.
+
+## Smoke-test record
+
+- 2026-09-20: `my-project` dispatched task `7f490aa7-7faa-4127-b306-5ae9de023e41` to `website-stream` through Telegram.
+- The MTProto owner send receipt succeeded, the stream Pi processed the task, and the structured stream result appeared in both Pi sessions and Telegram.
 
 ## Definition of done
 

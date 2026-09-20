@@ -25,11 +25,14 @@ export function parseEnvelope(text) {
 }
 
 export function canonicalPayload(fields, body) {
+  // Telegram bridges may normalize CRLF or add a trailing newline. Preserve all
+  // meaningful body content while making that transport-level formatting stable.
+  const normalizedBody = String(body).replace(/\r\n/g, "\n").replace(/[ \t\n]+$/g, "");
   return Object.entries(fields)
     .filter(([key]) => key !== "sig")
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => `${key}=${value}`)
-    .join("\n") + `\n\n${body}`;
+    .join("\n") + `\n\n${normalizedBody}`;
 }
 
 export function signEnvelope(fields, body, secret) {
