@@ -19,6 +19,8 @@ if (has("--remove")) {
   const path = value("--path");
   const telegramTarget = value("--telegram-target");
   if (!path || !telegramTarget) die("--path and --telegram-target are required when adding or editing a stream");
+  const repositoryPath = resolve(process.cwd(), path);
+  if (!existsSync(repositoryPath) || !existsSync(resolve(repositoryPath, ".git"))) die(`Stream repository does not exist or is not a Git repository: ${repositoryPath}`);
   config.agents[id] = { ...config.agents[id], path, telegramTarget };
 }
 writeAtomic(configFile, `${JSON.stringify(config, null, 2)}\n`);
