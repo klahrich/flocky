@@ -10,6 +10,7 @@ import { sendViaHerdr } from "./herdr.mjs";
 import { ensureOnboarded } from "./onboarding.mjs";
 import { registerFlockyCommands } from "./commands";
 import { applyAttachment, planAttachment } from "./attachment.mjs";
+import { parseOutcome } from "./outcome.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -167,7 +168,8 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     const taskId = activeTaskId;
     activeTaskId = undefined;
     const answer = latestAnswer || "Task settled without a textual final response. Review the session transcript for details.";
-    store.settleTask(taskId, answer);
+    const outcome = parseOutcome(answer);
+    store.settleTask(taskId, answer, outcome.status, outcome.reason);
 
     const task = parseEnvelope(findTaskRawMessage(ctx, taskId));
     if (!task || task.fields.answer_back !== "yes") return;
@@ -178,8 +180,9 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       ctx.ui.notify(`Cannot report ${taskId}: no configured route for ${recipient}`, "error");
       return;
     }
-    const body = `Result from stream \`${agentId}\` for task ${taskId}:\n\n${answer}`;
-    const payload = buildEnvelope({ type: "result", task_id: taskId, from: agentId, status: "success" }, body, secret);
+    const outcomeNote = outcome.declared ? "" : `\n\nFlocky note: ${outcome.reason}`;
+    const body = `Result from stream \`${agentId}\` for task ${taskId}:\n\n${answer}${outcomeNote}`;
+    const payload = buildEnvelope({ type: "result", task_id: taskId, from: agentId, status: outcome.status }, body, secret);
     store.enqueueResult(taskId, recipient, transport, payload);
     await flushOutbox(ctx);
     maybeCompact(ctx);

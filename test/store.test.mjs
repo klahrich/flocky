@@ -13,7 +13,7 @@ test("store deduplicates tasks and retains an outbox retry", () => {
     assert.equal(store.receiveTask(task), true);
     assert.equal(store.receiveTask(task), false);
     store.startTask("abc");
-    store.settleTask("abc", "done");
+    store.settleTask("abc", "done", "blocked", "missing credential");
     store.recordDispatch("dispatch-1", "stream", "herdr", "do work", "signed task");
     assert.equal(store.dispatchForTask("dispatch-1").recipient, "stream");
     store.enqueueResult("abc", "owner", "telegram", "message");

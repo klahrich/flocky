@@ -18,7 +18,9 @@ export class FlockyStore {
         status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        final_answer TEXT
+        final_answer TEXT,
+        outcome_status TEXT,
+        outcome_reason TEXT
       ) STRICT;
       CREATE TABLE IF NOT EXISTS dispatches (
         task_id TEXT PRIMARY KEY,
@@ -42,6 +44,8 @@ export class FlockyStore {
       ) STRICT;
     `);
     try { this.db.exec("ALTER TABLE outbox ADD COLUMN transport TEXT NOT NULL DEFAULT 'telegram'"); } catch { /* Existing databases already have the column. */ }
+    try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_status TEXT"); } catch { /* Existing databases already have the column. */ }
+    try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_reason TEXT"); } catch { /* Existing databases already have the column. */ }
   }
 
   receiveTask({ taskId, sender, replyTo, answerBack, body, rawMessage }) {
@@ -59,9 +63,9 @@ export class FlockyStore {
       .run(Date.now(), taskId);
   }
 
-  settleTask(taskId, finalAnswer) {
-    this.db.prepare("UPDATE tasks SET status = 'settled', final_answer = ?, updated_at = ? WHERE task_id = ?")
-      .run(finalAnswer, Date.now(), taskId);
+  settleTask(taskId, finalAnswer, outcomeStatus = "partial", outcomeReason = "") {
+    this.db.prepare("UPDATE tasks SET status = 'settled', final_answer = ?, outcome_status = ?, outcome_reason = ?, updated_at = ? WHERE task_id = ?")
+      .run(finalAnswer, outcomeStatus, outcomeReason, Date.now(), taskId);
   }
 
   failTask(taskId) {
