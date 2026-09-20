@@ -77,7 +77,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     label: "Attach Flocky Stream",
     description: "Preview or attach an existing Git stream repository to the Flocky protocol framework.",
     promptSnippet: "Attach a registered existing Git stream repository to Flocky",
-    promptGuidelines: ["Use flocky_attach_stream before dispatching to a newly registered stream so its Pi agent can receive signed tasks and return results."],
+    promptGuidelines: ["Use flocky_attach_stream only when the user asks to attach a newly registered stream or attachment is known to be incomplete; do not call it merely to dispatch an already attached stream."],
     parameters: Type.Object({
       stream: Type.String({ description: "Registered stream ID" }),
       confirm: Type.Boolean({ description: "False returns the exact file-change plan; true applies that reviewed plan" }),
