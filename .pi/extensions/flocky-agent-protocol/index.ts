@@ -88,6 +88,24 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "flocky_schedule_install_windows",
+    label: "Install Windows Flocky Schedule",
+    description: "Preview or install the local Windows Task Scheduler trigger for an existing Flocky schedule.",
+    parameters: Type.Object({ job: Type.String(), localTimes: Type.Array(Type.String()), confirm: Type.Boolean() }),
+    async execute(_id, params, _signal, _update, ctx) {
+      if (!store || !agentId || agentId !== config?.project?.id) throw new Error("Only the active project owner can install schedules");
+      if (!store.scheduledJob(params.job)) throw new Error(`Unknown schedule: ${params.job}`);
+      if (!params.localTimes.length || params.localTimes.some((time) => !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(time))) throw new Error("localTimes must use HH:mm");
+      const taskName = `Flocky_${config.project?.id}_${params.job}`;
+      const args = ["-ExecutionPolicy", "Bypass", "-File", join(ctx.cwd, "tools", "install-windows-flocky-schedule.ps1"), "-TaskName", taskName, "-ProjectPath", ctx.cwd, "-JobId", params.job, "-AtLocalTime", ...params.localTimes];
+      if (!params.confirm) return { content: [{ type: "text", text: `Preview: ${taskName} will run ${params.job} daily at local times ${params.localTimes.join(", ")}. Confirm to install.` }], details: { taskName, args } };
+      const result = await pi.exec("powershell", [...args, "-Apply"], { timeout: 30000 });
+      if (result.code !== 0) throw new Error(result.stderr || result.stdout || "Windows task installation failed");
+      return { content: [{ type: "text", text: result.stdout.trim() }], details: { taskName, installed: true } };
+    },
+  });
+
+  pi.registerTool({
     name: "flocky_schedule_create",
     label: "Create Flocky Schedule",
     description: "Create or update a confirmed recurring internal Flocky task. Windows execution is installed separately on the designated scheduler host.",

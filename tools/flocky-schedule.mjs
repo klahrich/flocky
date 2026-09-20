@@ -29,7 +29,7 @@ try {
   if (!recipient) throw new Error(`Schedule recipient ${job.recipient} is no longer configured`);
   const route = job.transport === "telegram" ? recipient.routes?.telegram?.target ?? recipient.telegramTarget : recipient.routes?.herdr;
   if (!route) throw new Error(`No ${job.transport} route is configured for ${job.recipient}`);
-  const occurrence = value("--occurrence") ?? `${job.id}:${new Intl.DateTimeFormat("sv-SE", { timeZone: job.timezone }).format(new Date())}`;
+  const occurrence = value("--occurrence") ?? `${job.id}:${occurrenceHour(new Date(), job.timezone)}`;
   const taskId = randomUUID();
   if (!store.claimScheduledRun(occurrence, job.id, taskId)) { console.log(`Skipped duplicate occurrence ${occurrence}`); process.exitCode = 0; }
   else {
@@ -45,3 +45,9 @@ try {
     } catch (error) { store.recordDeliveryAttempt(outbox.id, job.transport, "failed", error); store.markRetry(outbox.id, error); throw error; }
   }
 } finally { store.close(); }
+
+function occurrenceHour(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("sv-SE", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(date);
+  const get = (type) => parts.find((part) => part.type === type)?.value;
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:00[${timeZone}]`;
+}
