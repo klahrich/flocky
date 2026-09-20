@@ -8,11 +8,12 @@ system: operational-validation
 
 # Outcome
 
-A human-approved, harmless real Herdr run proves that Flocky can discover, route to, and receive a result from an actual stream Pi agent.
+A human-approved, harmless real Herdr run in repositories created from the private `flocky2` GitHub template proves that Flocky can discover, route to, and receive a result from an actual stream Pi agent.
 
 ## In scope
 
-- Use a disposable fixture stream repository or an explicitly approved harmless existing stream.
+- Create and clone a private `test-flocky2` owner repository from the `flocky2` GitHub template.
+- Use a separate disposable existing Git stream repository created from the same template; do not attach the production/original `flocky2` checkout as a test stream.
 - Run the owner Pi and stream Pi under Herdr.
 - Confirm route discovery and route persistence.
 - Dispatch a read-only task with a clear expected result, such as reporting repository name and Git status.
@@ -28,14 +29,14 @@ A human-approved, harmless real Herdr run proves that Flocky can discover, route
 
 ## Canonical path
 
-`confirmed fixture stream -> dedicated workspace -> route discovery -> signed read-only task -> stream response -> owner receipt -> evidence review -> cleanup`
+`template-derived owner and fixture stream clones -> dedicated workspace -> route discovery -> signed read-only task -> stream response -> owner receipt -> evidence review -> cleanup`
 
 ## Side-effect budget
 
 Allowed:
 
-- Create one dedicated test workspace and one Pi agent in a confirmed fixture repo.
-- Create local Flocky config/state for the fixture.
+- Create dedicated test workspaces and Pi agents only in confirmed template-derived fixture repositories.
+- Create local Flocky config/state for the fixtures.
 
 Forbidden:
 
