@@ -4,7 +4,7 @@ import { buildEnvelope, parseEnvelope, verifyEnvelope } from "../.pi/extensions/
 
 test("a built task envelope parses and verifies", () => {
   const secret = "test-secret";
-  const text = buildEnvelope({ type: "task", task_id: "task-1", from: "owner", reply_to: "stream", answer_back: "yes" }, "Implement it.", secret);
+  const text = buildEnvelope({ type: "task", task_id: "task-1", from: "owner", to: "stream", reply_to: "owner", answer_back: "yes" }, "Implement it.", secret);
   const parsed = parseEnvelope(text);
   assert.equal(parsed.fields.task_id, "task-1");
   assert.equal(parsed.body, "Implement it.");
@@ -12,7 +12,7 @@ test("a built task envelope parses and verifies", () => {
 });
 
 test("tampering with a signed body fails verification", () => {
-  const text = buildEnvelope({ type: "task", task_id: "task-1", from: "owner", reply_to: "stream", answer_back: "yes" }, "Implement it.", "secret");
+  const text = buildEnvelope({ type: "task", task_id: "task-1", from: "owner", to: "stream", reply_to: "owner", answer_back: "yes" }, "Implement it.", "secret");
   assert.equal(verifyEnvelope(parseEnvelope(text.replace("Implement", "Delete")), "secret"), false);
 });
 

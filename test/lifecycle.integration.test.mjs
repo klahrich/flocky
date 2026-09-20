@@ -36,7 +36,7 @@ test("owner-to-stream-to-owner lifecycle preserves correlation, retries, and sem
   try {
     const taskId = "task-001";
     const taskBody = "Inspect the repository only; do not edit files.";
-    const taskPayload = buildEnvelope({ type: "task", task_id: taskId, from: "owner", reply_to: "stream", answer_back: "yes" }, taskBody, secret);
+    const taskPayload = buildEnvelope({ type: "task", task_id: taskId, from: "owner", to: "stream", reply_to: "owner", answer_back: "yes" }, taskBody, secret);
     owner.recordDispatch(taskId, "stream", "herdr", taskBody, taskPayload);
     owner.enqueueResult(taskId, "stream", "herdr", taskPayload);
 
@@ -71,7 +71,7 @@ test("owner-to-stream-to-owner lifecycle preserves correlation, retries, and sem
     assert.equal(parsedResult.fields.task_id, taskId);
     assert.equal(parsedResult.fields.status, "success");
 
-    const secondTask = buildEnvelope({ type: "task", task_id: "task-002", from: "owner", reply_to: "stream", answer_back: "yes" }, "Report branch only.", secret);
+    const secondTask = buildEnvelope({ type: "task", task_id: "task-002", from: "owner", to: "stream", reply_to: "owner", answer_back: "yes" }, "Report branch only.", secret);
     const parsedSecond = parseEnvelope(secondTask);
     assert.equal(stream.receiveTask({ taskId: "task-002", sender: "owner", replyTo: "stream", answerBack: true, body: parsedSecond.body, rawMessage: secondTask }), true);
     stream.startTask("task-002");
@@ -85,7 +85,7 @@ test("owner-to-stream-to-owner lifecycle preserves correlation, retries, and sem
 });
 
 test("invalid signature and absent routes never produce delivery", async () => {
-  const payload = buildEnvelope({ type: "task", task_id: "task-bad", from: "owner", reply_to: "stream", answer_back: "yes" }, "safe work", secret);
+  const payload = buildEnvelope({ type: "task", task_id: "task-bad", from: "owner", to: "stream", reply_to: "owner", answer_back: "yes" }, "safe work", secret);
   assert.equal(verifyEnvelope(parseEnvelope(payload.replace("safe", "unsafe")), secret), false);
   const result = await deliverWithFallback({ item: { recipient: "unknown", transport: "herdr" }, config, async send() { throw new Error("should not send"); } });
   assert.equal(result.delivered, false);

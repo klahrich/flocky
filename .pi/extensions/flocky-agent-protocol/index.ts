@@ -56,7 +56,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       const taskId = params.taskId ?? randomUUID();
       const body = params.task.trim();
       if (!body) throw new Error("Task instructions cannot be empty");
-      const payload = buildEnvelope({ type: "task", task_id: taskId, from: agentId, reply_to: agentId, answer_back: answerBack ? "yes" : "no" }, body, secret);
+      const payload = buildEnvelope({ type: "task", task_id: taskId, from: agentId, to: params.stream, reply_to: agentId, answer_back: answerBack ? "yes" : "no" }, body, secret);
       const prior = store.dispatchForTask(taskId);
       if (prior && prior.payload !== payload) throw new Error(`Task ID ${taskId} already belongs to a different dispatch`);
       store.recordDispatch(taskId, params.stream, selectedTransport, body, payload);
@@ -130,8 +130,8 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       return { action: "handled" };
     }
     if (fields.type !== "task") return;
-    if (fields.reply_to !== agentId) {
-      ctx.ui.notify(`Ignored task ${fields.task_id}: addressed to ${fields.reply_to}`, "warning");
+    if (fields.to !== agentId) {
+      ctx.ui.notify(`Ignored task ${fields.task_id}: addressed to ${fields.to}`, "warning");
       return;
     }
     const inserted = store.receiveTask({

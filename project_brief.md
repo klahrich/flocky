@@ -42,7 +42,7 @@ The reusable Telegram skill is stored at `.agents/skills/telegram/`. It provides
 Agent messages begin with a signed first-line envelope, followed by the human-readable task or result body.
 
 ```text
-{{flocky:v1 type=task task_id=01J... from=project-owner reply_to=landing answer_back=yes sig=<hex>}}
+{{flocky:v1 type=task task_id=01J... from=project-owner to=landing reply_to=project-owner answer_back=yes sig=<hex>}}
 Implement the revised hero section. Preserve the current mobile layout.
 ```
 
@@ -58,7 +58,7 @@ Required envelope fields vary by type:
 
 | Type | Required fields |
 |---|---|
-| `task` | `task_id`, `from`, `reply_to`, `answer_back`, `sig` |
+| `task` | `task_id`, `from`, `to`, `reply_to`, `answer_back`, `sig` |
 | `result` | `task_id`, `from`, `status`, `sig` |
 | `compact` | `from`, `sig` |
 

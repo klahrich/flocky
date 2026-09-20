@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 const ENVELOPE = /^\{\{flocky:v(?<version>\d+)\s+(?<fields>[^}]*)\}\}(?:\r?\n)?(?<body>[\s\S]*)$/;
 const REQUIRED = {
-  task: ["task_id", "from", "reply_to", "answer_back", "sig"],
+  task: ["task_id", "from", "to", "reply_to", "answer_back", "sig"],
   result: ["task_id", "from", "status", "sig"],
   compact: ["from", "sig"],
 };
