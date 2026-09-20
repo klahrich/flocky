@@ -1,6 +1,7 @@
 # Local project identity, transport credentials, and agent memory
 flocky.config.json
 .env
+.flocky-smoke-secret
 MEMD.md
 
 # Extension runtime state
