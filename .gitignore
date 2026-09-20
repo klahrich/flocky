@@ -1,0 +1,14 @@
+# Local project identity, transport credentials, and agent memory
+flocky.config.json
+.env
+MEMD.md
+
+# Extension runtime state
+.pi/flocky/
+
+# Telegram / Telethon local sessions
+.agents/skills/telegram/scripts/.send-as-user.session*
+
+# Tooling
+node_modules/
+coverage/

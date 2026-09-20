@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+# Telethon user-account session for send_as_user.py — never commit
+*.session
+*.session-journal

@@ -1,0 +1,150 @@
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { resolve, join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+type Agent = { path?: string; description?: string; routes?: { herdr?: any; telegram?: any } };
+type Config = { project: { id: string }; agents: Record<string, Agent> };
+
+export function registerFlockyCommands(pi: ExtensionAPI) {
+  pi.registerCommand("streams", {
+    description: "List, add, edit, or remove Flocky stream repositories",
+    handler: async (args, ctx) => {
+      const command = args.trim();
+      if (!command || command === "list") return showStreams(ctx);
+      if (command === "add") return addStream(ctx);
+      if (command.startsWith("edit ")) return editStream(ctx, command.slice(5).trim());
+      if (command.startsWith("remove ")) return removeStream(ctx, command.slice(7).trim());
+      throw new Error("Usage: /streams [list|add|edit <id>|remove <id>]");
+    },
+  });
+
+  pi.registerCommand("routes", {
+    description: "List, discover, verify, or remove Flocky transport routes",
+    handler: async (args, ctx) => {
+      const command = args.trim();
+      if (!command || command === "list") return showRoutes(ctx);
+      if (command === "discover") return discoverHerdrRoutes(pi, ctx);
+      if (command === "verify") return verifyHerdrRoutes(pi, ctx);
+      if (command.startsWith("remove ")) return removeRoute(ctx, command.slice(7).trim());
+      throw new Error("Usage: /routes [list|discover|verify|remove <stream-id> [herdr|telegram]]");
+    },
+  });
+}
+
+async function showStreams(ctx: any) {
+  const config = load(ctx.cwd);
+  const streams = streamEntries(config);
+  if (!streams.length) return ctx.ui.notify("No streams are configured.", "info");
+  ctx.ui.notify(streams.map(([id, stream]) => `${id} — ${stream.path ?? "no path"}\n  ${stream.description ?? "no description"}`).join("\n"), "info");
+}
+
+async function addStream(ctx: any) {
+  requireTui(ctx, "/streams add");
+  const config = load(ctx.cwd);
+  const id = await askId(ctx, "Stream ID", "e.g. landing");
+  if (!id) return;
+  if (config.agents[id]) throw new Error(`Agent/stream ${id} already exists`);
+  const path = await ask(ctx, "Repository path", "e.g. ../landing");
+  const description = await ask(ctx, "Stream description", "What does this stream own?");
+  if (!path || !description) return;
+  config.agents[id] = { path, description, routes: {} };
+  save(ctx.cwd, config);
+  ctx.ui.notify(`Added stream ${id}`, "info");
+}
+
+async function editStream(ctx: any, id: string) {
+  requireTui(ctx, "/streams edit");
+  const config = load(ctx.cwd);
+  const stream = requireStream(config, id);
+  const path = await ctx.ui.input(`Repository path for ${id}`, stream.path ?? "");
+  if (path == null) return;
+  const description = await ctx.ui.input(`Description for ${id}`, stream.description ?? "");
+  if (description == null) return;
+  stream.path = path.trim() || stream.path;
+  stream.description = description.trim() || stream.description;
+  save(ctx.cwd, config);
+  ctx.ui.notify(`Updated stream ${id}`, "info");
+}
+
+async function removeStream(ctx: any, id: string) {
+  const config = load(ctx.cwd);
+  requireStream(config, id);
+  if (id === config.project.id) throw new Error("The project owner is not a removable stream");
+  if (!await ctx.ui.confirm(`Remove ${id}?`, "This removes its Flocky configuration and routes, not its repository or Herdr workspace.")) return;
+  delete config.agents[id];
+  save(ctx.cwd, config);
+  ctx.ui.notify(`Removed stream ${id}`, "info");
+}
+
+async function showRoutes(ctx: any) {
+  const config = load(ctx.cwd);
+  const lines = streamEntries(config).map(([id, stream]) => {
+    const herdr = stream.routes?.herdr?.paneId ? `herdr:${stream.routes.herdr.paneId}` : "herdr:unconfigured";
+    const telegram = stream.routes?.telegram?.target ? `telegram:${stream.routes.telegram.target}` : "telegram:unconfigured";
+    return `${id} — ${herdr}; ${telegram}`;
+  });
+  ctx.ui.notify(lines.length ? lines.join("\n") : "No stream routes are configured.", "info");
+}
+
+async function discoverHerdrRoutes(pi: ExtensionAPI, ctx: any) {
+  requireTui(ctx, "/routes discover");
+  if (process.env.HERDR_ENV !== "1") throw new Error("Herdr route discovery requires Pi to run inside Herdr");
+  const workspace = process.env.HERDR_WORKSPACE_ID;
+  if (!workspace) throw new Error("Current Herdr workspace ID is unavailable");
+  const config = load(ctx.cwd);
+  const response = await herdr(pi, ["pane", "list", "--workspace", workspace]);
+  const panes = response?.result?.panes ?? [];
+  let saved = 0;
+  for (const [id, stream] of streamEntries(config)) {
+    if (!stream.path) continue;
+    const expected = resolve(ctx.cwd, stream.path);
+    const pane = panes.find((candidate: any) => candidate.agent === "pi" && samePath(candidate.cwd, expected));
+    if (!pane) continue;
+    const overwrite = stream.routes?.herdr?.paneId && stream.routes.herdr.paneId !== pane.pane_id;
+    if (overwrite && !await ctx.ui.confirm(`Replace Herdr route for ${id}?`, `${stream.routes?.herdr?.paneId} → ${pane.pane_id}`)) continue;
+    if (!overwrite && !await ctx.ui.confirm(`Save Herdr route for ${id}?`, `${pane.pane_id} — ${pane.cwd} — ${pane.agent_status}`)) continue;
+    stream.routes ??= {};
+    stream.routes.herdr = { paneId: pane.pane_id, workspaceId: pane.workspace_id, expectedCwd: pane.cwd, agent: "pi", verifiedAt: new Date().toISOString() };
+    saved++;
+  }
+  if (saved) save(ctx.cwd, config);
+  ctx.ui.notify(saved ? `Saved ${saved} Herdr route(s).` : "No matching new Herdr routes were found.", "info");
+}
+
+async function verifyHerdrRoutes(pi: ExtensionAPI, ctx: any) {
+  if (process.env.HERDR_ENV !== "1") throw new Error("Herdr route verification requires Pi to run inside Herdr");
+  const config = load(ctx.cwd);
+  const results: string[] = [];
+  for (const [id, stream] of streamEntries(config)) {
+    const route = stream.routes?.herdr;
+    if (!route?.paneId) { results.push(`${id}: no Herdr route`); continue; }
+    try {
+      const pane = (await herdr(pi, ["pane", "get", route.paneId]))?.result?.pane;
+      const valid = pane?.agent === "pi" && samePath(pane.cwd, route.expectedCwd);
+      results.push(`${id}: ${valid ? "valid" : "stale"}${pane?.agent_status ? ` (${pane.agent_status})` : ""}`);
+    } catch { results.push(`${id}: unavailable (${route.paneId})`); }
+  }
+  ctx.ui.notify(results.join("\n") || "No stream routes are configured.", "info");
+}
+
+async function removeRoute(ctx: any, args: string) {
+  const [id, transport = "herdr"] = args.split(/\s+/, 2);
+  if (transport !== "herdr" && transport !== "telegram") throw new Error("Route transport must be herdr or telegram");
+  const config = load(ctx.cwd);
+  const stream = requireStream(config, id);
+  if (!stream.routes?.[transport]) throw new Error(`${id} has no ${transport} route`);
+  if (!await ctx.ui.confirm(`Remove ${transport} route for ${id}?`, "The agent and repository stay configured.")) return;
+  delete stream.routes[transport];
+  save(ctx.cwd, config);
+  ctx.ui.notify(`Removed ${transport} route for ${id}`, "info");
+}
+
+function load(cwd: string): Config { const path = join(cwd, "flocky.config.json"); if (!existsSync(path)) throw new Error("Flocky is not onboarded yet"); return JSON.parse(readFileSync(path, "utf8")); }
+function save(cwd: string, config: Config) { const file = join(cwd, "flocky.config.json"); const temporary = `${file}.${process.pid}.tmp`; writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, "utf8"); renameSync(temporary, file); }
+function streamEntries(config: Config): Array<[string, Agent]> { return Object.entries(config.agents).filter(([id]) => id !== config.project.id); }
+function requireStream(config: Config, id: string): Agent { const stream = config.agents[id]; if (!stream || id === config.project.id) throw new Error(`Unknown stream ${id}`); return stream; }
+async function ask(ctx: any, title: string, placeholder: string) { const value = await ctx.ui.input(title, placeholder); return value?.trim(); }
+async function askId(ctx: any, title: string, placeholder: string) { while (true) { const value = await ask(ctx, title, placeholder); if (!value || /^[a-z0-9][a-z0-9-]*$/.test(value)) return value; ctx.ui.notify("Use lowercase letters, digits, and hyphens.", "warning"); } }
+function requireTui(ctx: any, label: string) { if (ctx.mode !== "tui") throw new Error(`${label} requires Pi TUI mode`); }
+async function herdr(pi: ExtensionAPI, args: string[]) { const result = await pi.exec("herdr", args, { timeout: 30000 }); if (result.code !== 0) throw new Error(result.stderr || `herdr ${args.join(" ")} failed`); return JSON.parse(result.stdout); }
+function samePath(left: string, right: string) { return typeof left === "string" && resolve(left).toLowerCase() === resolve(right).toLowerCase(); }

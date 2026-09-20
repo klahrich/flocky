@@ -1,0 +1,37 @@
+{
+  "project": {
+    "id": "example-project",
+    "ownerAgentId": "example-project"
+  },
+  "runtime": {
+    "agentId": "example-project"
+  },
+  "agents": {
+    "example-project": {
+      "routes": {
+        "telegram": { "target": "@example_project_bot" }
+      }
+    },
+    "example-stream": {
+      "path": "../example-stream",
+      "routes": {
+        "telegram": { "target": "@example_stream_bot" }
+      }
+    }
+  },
+  "protocol": {
+    "secretEnv": "FLOCKY_PROTOCOL_SECRET"
+  },
+  "transport": {
+    "default": "telegram",
+    "fallbackOrder": ["telegram"],
+    "sendAsUserScript": ".agents/skills/telegram/scripts/send_as_user.py",
+    "command": "uv",
+    "commandArgs": ["run"]
+  },
+  "compaction": {
+    "enabled": true,
+    "afterCompletedTasks": 4,
+    "contextPercent": 75
+  }
+}
