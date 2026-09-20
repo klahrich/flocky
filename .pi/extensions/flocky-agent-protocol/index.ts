@@ -88,6 +88,29 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "flocky_schedule_create",
+    label: "Create Flocky Schedule",
+    description: "Create or update a confirmed recurring internal Flocky task. Windows execution is installed separately on the designated scheduler host.",
+    promptSnippet: "Create a confirmed recurring Flocky schedule",
+    promptGuidelines: ["Use only after showing the user a schedule preview and receiving explicit confirmation. Default timezone is America/Toronto. Scheduled targets must be configured streams."],
+    parameters: Type.Object({
+      id: Type.String(), recipient: Type.String(), task: Type.String(), cron: Type.String({ description: "Five-field cron" }),
+      timezone: Type.Optional(Type.String()), answerBack: Type.Optional(Type.Boolean()), transport: Type.Optional(Type.String()),
+      concurrencyKey: Type.Optional(Type.String()), missedRunPolicy: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params) {
+      if (!store || !config || !agentId || agentId !== config.project?.id) throw new Error("Only an active project owner can create schedules");
+      if (!config.agents?.[params.recipient] || params.recipient === agentId) throw new Error(`Unknown stream: ${params.recipient}`);
+      if (!params.task.trim() || !/^\S+(\s+\S+){4}$/.test(params.cron.trim())) throw new Error("A non-empty task and five-field cron schedule are required");
+      const transport = params.transport ?? transportFor(config, params.recipient);
+      if (!routeFor(config, params.recipient, transport)) throw new Error(`No ${transport} route is configured for ${params.recipient}`);
+      const job = { id: params.id, recipient: params.recipient, task: params.task.trim(), cron: params.cron.trim(), timezone: params.timezone ?? "America/Toronto", answerBack: params.answerBack ?? true, transport, concurrencyKey: params.concurrencyKey ?? params.recipient, missedRunPolicy: params.missedRunPolicy ?? "skip", actionPolicy: "internal_task", enabled: true };
+      store.saveScheduledJob(job);
+      return { content: [{ type: "text", text: `Created schedule ${job.id}: ${job.cron} (${job.timezone}) → ${job.recipient} via ${job.transport}. Install its Windows trigger on the scheduler host before it can run.` }], details: job };
+    },
+  });
+
+  pi.registerTool({
     name: "flocky_dispatch", 
     label: "Flocky Dispatch",
     description: "Dispatch a signed durable task from the project owner to one configured stream agent.",

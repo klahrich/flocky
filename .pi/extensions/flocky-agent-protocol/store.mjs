@@ -28,6 +28,22 @@ export class FlockyStore {
         payload TEXT NOT NULL,
         created_at INTEGER NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS scheduled_jobs (
+        job_id TEXT PRIMARY KEY,
+        definition TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS scheduled_runs (
+        occurrence_key TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL,
+        task_id TEXT,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        error TEXT
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS delivery_attempts (
         id INTEGER PRIMARY KEY,
         outbox_id INTEGER NOT NULL,
@@ -62,6 +78,27 @@ export class FlockyStore {
     try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_status TEXT"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_reason TEXT"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE outbox ADD COLUMN delivered_transport TEXT"); } catch { /* Existing databases already have the column. */ }
+  }
+
+  saveScheduledJob(job) {
+    const now = Date.now();
+    this.db.prepare("INSERT INTO scheduled_jobs (job_id, definition, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET definition = excluded.definition, enabled = excluded.enabled, updated_at = excluded.updated_at")
+      .run(job.id, JSON.stringify(job), job.enabled === false ? 0 : 1, now, now);
+  }
+
+  scheduledJob(jobId) {
+    const row = this.db.prepare("SELECT * FROM scheduled_jobs WHERE job_id = ?").get(jobId);
+    return row ? { ...row, definition: JSON.parse(row.definition) } : null;
+  }
+
+  scheduledJobs() {
+    return this.db.prepare("SELECT * FROM scheduled_jobs ORDER BY job_id").all().map((row) => ({ ...row, definition: JSON.parse(row.definition) }));
+  }
+
+  claimScheduledRun(occurrenceKey, jobId, taskId) {
+    const now = Date.now();
+    return this.db.prepare("INSERT INTO scheduled_runs (occurrence_key, job_id, task_id, status, created_at, updated_at) VALUES (?, ?, ?, 'claimed', ?, ?) ON CONFLICT(occurrence_key) DO NOTHING")
+      .run(occurrenceKey, jobId, taskId, now, now).changes === 1;
   }
 
   receiveTask({ taskId, sender, replyTo, answerBack, body, rawMessage }) {
