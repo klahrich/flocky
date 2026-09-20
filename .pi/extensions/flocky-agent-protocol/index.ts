@@ -13,6 +13,7 @@ import { applyAttachment, planAttachment } from "./attachment.mjs";
 import { parseOutcome } from "./outcome.mjs";
 import { deliverWithFallback } from "./delivery.mjs";
 import { loadProjectEnv } from "./config.mjs";
+import { areValidLocalTimes, normalizeLocalTimes } from "./schedule.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -125,10 +126,11 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     async execute(_id, params, _signal, _update, ctx) {
       if (!store || !agentId || agentId !== config?.project?.id) throw new Error("Only the active project owner can install schedules");
       if (!store.scheduledJob(params.job)) throw new Error(`Unknown schedule: ${params.job}`);
-      if (!params.localTimes.length || params.localTimes.some((time) => !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(time))) throw new Error("localTimes must use HH:mm");
+      const localTimes = normalizeLocalTimes(params.localTimes);
+      if (!areValidLocalTimes(localTimes)) throw new Error("localTimes must use HH:mm");
       const taskName = `Flocky_${config.project?.id}_${params.job}`;
-      const args = ["-ExecutionPolicy", "Bypass", "-File", join(ctx.cwd, "tools", "install-windows-flocky-schedule.ps1"), "-TaskName", taskName, "-ProjectPath", ctx.cwd, "-JobId", params.job, "-AtLocalTime", ...params.localTimes];
-      if (!params.confirm) return { content: [{ type: "text", text: `Preview: ${taskName} will run ${params.job} daily at local times ${params.localTimes.join(", ")}. Confirm to install.` }], details: { taskName, args } };
+      const args = ["-ExecutionPolicy", "Bypass", "-File", join(ctx.cwd, "tools", "install-windows-flocky-schedule.ps1"), "-TaskName", taskName, "-ProjectPath", ctx.cwd, "-JobId", params.job, "-AtLocalTime", ...localTimes];
+      if (!params.confirm) return { content: [{ type: "text", text: `Preview: ${taskName} will run ${params.job} daily at local times ${localTimes.join(", ")}. Confirm to install.` }], details: { taskName, args } };
       const result = await pi.exec("powershell", [...args, "-Apply"], { timeout: 30000 });
       if (result.code !== 0) throw new Error(result.stderr || result.stdout || "Windows task installation failed");
       return { content: [{ type: "text", text: result.stdout.trim() }], details: { taskName, installed: true } };
