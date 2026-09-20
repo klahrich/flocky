@@ -19,7 +19,9 @@ export function planAttachment({ ownerCwd, config, streamId }) {
   const telegramNeeded = config.transport?.default === "telegram" || config.transport?.fallbackOrder?.includes("telegram");
   const telegramSource = join(ownerCwd, ".agents", "skills", "telegram");
   if (telegramNeeded && !existsSync(telegramSource)) throw new Error(`Telegram transport is configured but the skill is missing: ${telegramSource}`);
+  const environment = planEnvironmentSync(ownerCwd, streamCwd);
   const actions = [
+    { path: ".env", action: environment.action },
     { path: ".pi/extensions/flocky-agent-protocol", action: existsSync(join(streamCwd, ".pi", "extensions", "flocky-agent-protocol")) ? "replace Flocky extension" : "install Flocky extension" },
     { path: "flocky.config.json", action: existsSync(join(streamCwd, "flocky.config.json")) ? "replace local Flocky config" : "create local Flocky config" },
     { path: "AGENTS.md", action: existsSync(join(streamCwd, "AGENTS.md")) ? "update Flocky-managed instruction block" : "create Flocky stream instructions" },
@@ -48,10 +50,42 @@ export function applyAttachment({ ownerCwd, config, streamId }) {
     compaction: config.compaction,
     onboarding: { version: 1, attachedAt: new Date().toISOString(), attachedBy: config.project.id },
   };
+  syncEnvironment(ownerCwd, plan.streamCwd);
   writeAtomic(join(plan.streamCwd, "flocky.config.json"), `${JSON.stringify(streamConfig, null, 2)}\n`);
   updateAgentsFile(plan.streamCwd, readFileSync(join(ownerCwd, "templates", "stream-AGENTS.md"), "utf8"));
   writeAtomic(join(plan.streamCwd, ".pi", "flocky", "attachment.json"), `${JSON.stringify({ schemaVersion: 1, streamId, attachedAt: new Date().toISOString(), ownerProject: config.project.id }, null, 2)}\n`);
   return plan;
+}
+
+const REQUIRED_ENV = ["FLOCKY_PROTOCOL_SECRET", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"];
+
+function planEnvironmentSync(ownerCwd, streamCwd) {
+  const source = readEnv(join(ownerCwd, ".env"));
+  const missing = REQUIRED_ENV.filter((key) => !source[key]);
+  if (missing.length) throw new Error(`Owner .env is missing required Flocky transport values: ${missing.join(", ")}`);
+  const targetPath = join(streamCwd, ".env");
+  const target = readEnv(targetPath);
+  for (const key of REQUIRED_ENV) if (target[key] && target[key] !== source[key]) throw new Error(`Stream .env has a different ${key}; resolve it manually before attachment`);
+  const additions = REQUIRED_ENV.filter((key) => !target[key]);
+  return { action: additions.length ? (existsSync(targetPath) ? `append required local Flocky values (${additions.join(", ")})` : "create required local Flocky .env values") : "keep existing required local Flocky .env values" };
+}
+
+function syncEnvironment(ownerCwd, streamCwd) {
+  const plan = planEnvironmentSync(ownerCwd, streamCwd);
+  if (plan.action.startsWith("keep")) return;
+  const source = readEnv(join(ownerCwd, ".env"));
+  const targetPath = join(streamCwd, ".env");
+  const existing = existsSync(targetPath) ? readFileSync(targetPath, "utf8").trimEnd() : "";
+  const target = readEnv(targetPath);
+  const additions = REQUIRED_ENV.filter((key) => !target[key]).map((key) => `${key}=${source[key]}`);
+  writeAtomic(targetPath, `${existing}${existing ? "\n" : ""}# Flocky local transport configuration\n${additions.join("\n")}\n`);
+}
+
+function readEnv(path) {
+  if (!existsSync(path)) return {};
+  const values = {};
+  for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) { const line = raw.trim(); const separator = line.indexOf("="); if (!line || line.startsWith("#") || separator <= 0) continue; let value = line.slice(separator + 1).trim(); if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1); values[line.slice(0, separator).trim()] = value; }
+  return values;
 }
 
 function updateAgentsFile(streamCwd, template) {
