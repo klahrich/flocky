@@ -118,7 +118,10 @@ async def send(target: str, message: str, api_id: int, api_hash: str) -> None:
             entity = await client.get_entity(target)
         except (UsernameNotOccupiedError, UsernameInvalidError) as exc:
             sys.exit(f"error: could not resolve {target} ({exc.__class__.__name__})")
-        await client.send_message(entity, message)
+        # Flocky signs exact message bodies. Disable Telethon's default Markdown
+        # parser so Telegram does not transform code fences or other markup before
+        # the receiving Pi bridge verifies the signed envelope.
+        await client.send_message(entity, message, parse_mode=None)
         print(f"✓ sent to {target} as you: {message!r}")
 
 
