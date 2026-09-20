@@ -7,3 +7,4 @@
 | [003 — Post-onboarding stream launch](003-post-onboarding-stream-launch.md) | Medium | Launch an attached stream into its own Herdr workspace. |
 | [004 — Operator status and outbox visibility](004-operator-status-and-outbox-visibility.md) | Medium | Inspect tasks, routes, and delivery attempts from Pi. |
 | [005 — Release polish and CI](005-release-polish-and-ci.md) | Low | Add repeatable release-quality validation and adoption docs. |
+| [006 — Resumable onboarding drafts](006-resumable-onboarding-drafts.md) | Medium | Save, resume, or import a reviewed onboarding configuration. |
