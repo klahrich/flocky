@@ -14,6 +14,7 @@ import { parseOutcome } from "./outcome.mjs";
 import { deliverWithFallback } from "./delivery.mjs";
 import { loadProjectEnv } from "./config.mjs";
 import { areValidLocalTimes, normalizeLocalTimes } from "./schedule.mjs";
+import { NO_TEXT_FINAL_RESPONSE, buildResultBody } from "./result.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -300,7 +301,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     if (!store || !config || !agentId || !secret || !activeTaskId) return;
     const taskId = activeTaskId;
     activeTaskId = undefined;
-    const answer = latestAnswer || "Task settled without a textual final response. Review the session transcript for details.";
+    const answer = latestAnswer || NO_TEXT_FINAL_RESPONSE;
     const completion = store.completionForTask(taskId)?.payload;
     const outcome = completion
       ? { status: completion.status, declared: true, reason: completion.reason }
@@ -316,10 +317,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       ctx.ui.notify(`Cannot report ${taskId}: no configured route for ${recipient}`, "error");
       return;
     }
-    const structured = completion ? renderCompletion(completion) : "";
-    const outcomeNote = outcome.declared ? "" : `\n\nFlocky note: ${outcome.reason}`;
-    const raw = answer ? `\n\nRaw assistant message:\n${answer}` : "";
-    const body = `Result from stream \`${agentId}\` for task ${taskId}:\n\n${structured || answer}${outcomeNote}${structured ? raw : ""}`;
+    const body = buildResultBody({ agentId, taskId, answer, completion, outcome });
     const payload = buildEnvelope({ type: "result", task_id: taskId, from: agentId, status: outcome.status }, body, secret);
     store.enqueueResult(taskId, recipient, transport, payload);
     await flushOutbox(ctx);
@@ -367,11 +365,6 @@ function loadConfig(cwd: string): Config {
   const path = join(cwd, "flocky.config.json");
   if (!existsSync(path)) throw new Error("missing flocky.config.json (copy flocky.config.example.json)");
   return JSON.parse(readFileSync(path, "utf8")) as Config;
-}
-
-function renderCompletion(completion: { status: string; summary: string; completed: string[]; notCompleted: string[]; validation: string[]; reason: string; safeState: string; nextAction: string }): string {
-  const list = (items: string[]) => items.length ? items.map((item) => `- ${item}`).join("\n") : "- none";
-  return `RESULT: ${completion.status.toUpperCase()}\nSummary: ${completion.summary}\nCompleted:\n${list(completion.completed)}\nNot completed:\n${list(completion.notCompleted)}\nValidation:\n${list(completion.validation)}\nReason: ${completion.reason || "none"}\nSafe state: ${completion.safeState}\nNext action: ${completion.nextAction}`;
 }
 
 function textContent(content: unknown): string {
