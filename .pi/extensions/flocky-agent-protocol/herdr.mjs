@@ -24,6 +24,7 @@ function herdr(args, signal) {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code !== 0) return reject(new Error(stderr.trim() || `herdr ${args.join(" ")} exited ${code}`));
+      if (!stdout.trim()) return resolvePromise({});
       try { resolvePromise(JSON.parse(stdout)); } catch (error) { reject(error); }
     });
     signal?.addEventListener("abort", () => child.kill(), { once: true });
