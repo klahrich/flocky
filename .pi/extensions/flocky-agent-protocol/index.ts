@@ -11,6 +11,7 @@ import { ensureOnboarded } from "./onboarding.mjs";
 import { registerFlockyCommands } from "./commands";
 import { applyAttachment, planAttachment } from "./attachment.mjs";
 import { parseOutcome } from "./outcome.mjs";
+import { deliverWithFallback } from "./delivery.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -193,19 +194,21 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     sending = true;
     try {
       for (const item of store.pendingOutbox()) {
-        const route = routeFor(config, item.recipient, item.transport);
-        if (!route) { store.markRetry(item.id, `Missing ${item.transport} route for ${item.recipient}`); continue; }
-        try {
-          if (item.transport === "herdr") {
-            await sendViaHerdr({ cwd: ctx.cwd, route, text: item.payload, signal: signal ?? ctx.signal });
-          } else {
-            await sendAsTelegramUser({ cwd: ctx.cwd, config, target: route.target, text: item.payload, signal: signal ?? ctx.signal });
-          }
-          store.markSent(item.id);
-          ctx.ui.notify(`Reported task ${item.task_id} to ${item.recipient}`, "info");
-        } catch (error) {
-          store.markRetry(item.id, message(error));
-          ctx.ui.notify(`Could not report task ${item.task_id}: ${message(error)}`, "error");
+        const delivery = await deliverWithFallback({
+          item,
+          config,
+          send: async ({ transport, route }: any) => {
+            if (transport === "herdr") return sendViaHerdr({ cwd: ctx.cwd, route, text: item.payload, signal: signal ?? ctx.signal });
+            return sendAsTelegramUser({ cwd: ctx.cwd, config, target: route.target, text: item.payload, signal: signal ?? ctx.signal });
+          },
+          onAttempt: ({ transport, status, error }: any) => store?.recordDeliveryAttempt(item.id, transport, status, error),
+        });
+        if (delivery.delivered) {
+          store.markSent(item.id, delivery.transport);
+          ctx.ui.notify(`Delivered task ${item.task_id} to ${item.recipient} via ${delivery.transport}`, "info");
+        } else {
+          store.markRetry(item.id, delivery.error);
+          ctx.ui.notify(`Could not deliver task ${item.task_id}: ${delivery.error}`, "error");
         }
       }
     } finally { sending = false; }

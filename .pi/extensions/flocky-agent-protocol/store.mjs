@@ -22,6 +22,14 @@ export class FlockyStore {
         outcome_status TEXT,
         outcome_reason TEXT
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS delivery_attempts (
+        id INTEGER PRIMARY KEY,
+        outbox_id INTEGER NOT NULL,
+        transport TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        attempted_at INTEGER NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS dispatches (
         task_id TEXT PRIMARY KEY,
         recipient TEXT NOT NULL,
@@ -39,6 +47,7 @@ export class FlockyStore {
         status TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
         last_error TEXT,
+        delivered_transport TEXT,
         created_at INTEGER NOT NULL,
         sent_at INTEGER
       ) STRICT;
@@ -46,6 +55,7 @@ export class FlockyStore {
     try { this.db.exec("ALTER TABLE outbox ADD COLUMN transport TEXT NOT NULL DEFAULT 'telegram'"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_status TEXT"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_reason TEXT"); } catch { /* Existing databases already have the column. */ }
+    try { this.db.exec("ALTER TABLE outbox ADD COLUMN delivered_transport TEXT"); } catch { /* Existing databases already have the column. */ }
   }
 
   receiveTask({ taskId, sender, replyTo, answerBack, body, rawMessage }) {
@@ -102,14 +112,24 @@ export class FlockyStore {
     return this.db.prepare("SELECT * FROM outbox WHERE status IN ('pending', 'retrying') ORDER BY id").all();
   }
 
-  markSent(id) {
-    this.db.prepare("UPDATE outbox SET status = 'sent', attempts = attempts + 1, sent_at = ?, last_error = NULL WHERE id = ?")
-      .run(Date.now(), id);
+  recordDeliveryAttempt(outboxId, transport, status, error = null) {
+    this.db.prepare("INSERT INTO delivery_attempts (outbox_id, transport, status, error, attempted_at) VALUES (?, ?, ?, ?, ?)")
+      .run(outboxId, transport, status, error ? String(error).slice(0, 2000) : null, Date.now());
+    this.db.prepare("UPDATE outbox SET attempts = attempts + 1 WHERE id = ?").run(outboxId);
+  }
+
+  markSent(id, transport) {
+    this.db.prepare("UPDATE outbox SET status = 'sent', sent_at = ?, last_error = NULL, delivered_transport = ? WHERE id = ?")
+      .run(Date.now(), transport, id);
   }
 
   markRetry(id, error) {
-    this.db.prepare("UPDATE outbox SET status = 'retrying', attempts = attempts + 1, last_error = ? WHERE id = ?")
+    this.db.prepare("UPDATE outbox SET status = 'retrying', last_error = ? WHERE id = ?")
       .run(String(error).slice(0, 2000), id);
+  }
+
+  deliveryAttempts(outboxId) {
+    return this.db.prepare("SELECT * FROM delivery_attempts WHERE outbox_id = ? ORDER BY id").all(outboxId);
   }
 
   completedTaskCount() {

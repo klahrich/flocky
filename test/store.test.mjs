@@ -18,9 +18,11 @@ test("store deduplicates tasks and retains an outbox retry", () => {
     assert.equal(store.dispatchForTask("dispatch-1").recipient, "stream");
     store.enqueueResult("abc", "owner", "telegram", "message");
     const [outbox] = store.pendingOutbox();
+    store.recordDeliveryAttempt(outbox.id, "herdr", "failed", "offline");
     store.markRetry(outbox.id, "offline");
     assert.equal(store.pendingOutbox()[0].last_error, "offline");
-    store.markSent(outbox.id);
+    assert.equal(store.deliveryAttempts(outbox.id)[0].transport, "herdr");
+    store.markSent(outbox.id, "telegram");
     assert.equal(store.pendingOutbox().length, 0);
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
