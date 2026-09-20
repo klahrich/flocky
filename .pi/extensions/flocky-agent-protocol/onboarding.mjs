@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 
 export async function ensureOnboarded(pi, ctx) {
@@ -50,6 +50,7 @@ export async function ensureOnboarded(pi, ctx) {
 
   writeConfig(configPath, config);
   writeProjectDescription(ctx.cwd, projectId, description, config.agents);
+  updateOwnerAgentsFile(ctx.cwd, readFileSync(join(ctx.cwd, "templates", "project-owner-AGENTS.md"), "utf8"));
   ctx.ui.notify("Flocky onboarding complete. Protocol routing is now active.", "info");
   return true;
 }
@@ -119,5 +120,15 @@ async function existingRepositoryPath(ctx, suggestedPath = "../stream-id") { whi
 async function requiredInput(ctx, title, placeholder, matcher, error) { while (true) { const value = await ctx.ui.input(title, placeholder); if (value == null) return null; if (matcher.test(value.trim())) return value.trim(); ctx.ui.notify(error, "warning"); } }
 function writeConfig(file, config) { mkdirSync(dirname(file), { recursive: true }); writeAtomic(file, `${JSON.stringify(config, null, 2)}\n`); }
 function writeProjectDescription(cwd, id, description, agents) { const path = join(cwd, "projects", id, "PROJECT.md"); mkdirSync(dirname(path), { recursive: true }); const streams = Object.entries(agents).filter(([key]) => key !== id).map(([key, agent]) => `- **${key}** — ${agent.description}`).join("\n"); writeAtomic(path, `# ${id}\n\n${description}\n\n## Streams\n${streams}\n`); }
+function updateOwnerAgentsFile(cwd, template) {
+  const path = join(cwd, "AGENTS.md");
+  const start = "<!-- flocky:owner-instructions:start -->";
+  const end = "<!-- flocky:owner-instructions:end -->";
+  const block = `${start}\n${template.trim()}\n${end}`;
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const matcher = new RegExp(`${escapeRegex(start)}[\\s\\S]*?${escapeRegex(end)}`);
+  writeAtomic(path, matcher.test(existing) ? existing.replace(matcher, block) : `${existing.trimEnd()}${existing.trim() ? "\n\n" : ""}${block}\n`);
+}
+function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 function writeAtomic(file, content) { const temporary = `${file}.${process.pid}.tmp`; writeFileSync(temporary, content, "utf8"); renameSync(temporary, file); }
 function basename(path) { return path.replace(/[\\/]$/, "").split(/[\\/]/).pop(); }
