@@ -88,6 +88,36 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "flocky_schedule_pause",
+    label: "Pause Flocky Schedule",
+    description: "Durably disable a scheduled Flocky job so future runner invocations refuse to dispatch it.",
+    parameters: Type.Object({ job: Type.String(), confirm: Type.Boolean() }),
+    async execute(_id, params) {
+      if (!store || !agentId || agentId !== config?.project?.id) throw new Error("Only the active project owner can pause schedules");
+      if (!store.scheduledJob(params.job)) throw new Error(`Unknown schedule: ${params.job}`);
+      if (!params.confirm) return { content: [{ type: "text", text: `Preview: pause ${params.job}. Existing Windows triggers will remain but safely skip dispatch until removed or re-enabled.` }] };
+      store.setScheduledJobEnabled(params.job, false);
+      return { content: [{ type: "text", text: `Paused Flocky schedule ${params.job}.` }] };
+    },
+  });
+
+  pi.registerTool({
+    name: "flocky_schedule_uninstall_windows",
+    label: "Uninstall Windows Flocky Schedule",
+    description: "Preview or remove only the named Windows Task Scheduler trigger for an existing Flocky schedule.",
+    parameters: Type.Object({ job: Type.String(), confirm: Type.Boolean() }),
+    async execute(_id, params, _signal, _update, ctx) {
+      if (!store || !agentId || agentId !== config?.project?.id) throw new Error("Only the active project owner can uninstall schedules");
+      if (!store.scheduledJob(params.job)) throw new Error(`Unknown schedule: ${params.job}`);
+      const taskName = `Flocky_${config.project?.id}_${params.job}`;
+      if (!params.confirm) return { content: [{ type: "text", text: `Preview: remove only Windows task ${taskName}; the durable Flocky schedule remains unchanged.` }], details: { taskName } };
+      const result = await pi.exec("powershell", ["-NoProfile", "-Command", `Unregister-ScheduledTask -TaskName '${taskName.replace(/'/g, "''")}' -Confirm:$false`], { timeout: 30000 });
+      if (result.code !== 0) throw new Error(result.stderr || result.stdout || "Windows task removal failed");
+      return { content: [{ type: "text", text: `Removed Windows task ${taskName}.` }], details: { taskName, removed: true } };
+    },
+  });
+
+  pi.registerTool({
     name: "flocky_schedule_install_windows",
     label: "Install Windows Flocky Schedule",
     description: "Preview or install the local Windows Task Scheduler trigger for an existing Flocky schedule.",

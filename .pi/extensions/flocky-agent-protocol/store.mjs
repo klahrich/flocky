@@ -95,6 +95,10 @@ export class FlockyStore {
     return this.db.prepare("SELECT * FROM scheduled_jobs ORDER BY job_id").all().map((row) => ({ ...row, definition: JSON.parse(row.definition) }));
   }
 
+  setScheduledJobEnabled(jobId, enabled) {
+    return this.db.prepare("UPDATE scheduled_jobs SET enabled = ?, updated_at = ? WHERE job_id = ?").run(enabled ? 1 : 0, Date.now(), jobId).changes === 1;
+  }
+
   claimScheduledRun(occurrenceKey, jobId, taskId) {
     const now = Date.now();
     return this.db.prepare("INSERT INTO scheduled_runs (occurrence_key, job_id, task_id, status, created_at, updated_at) VALUES (?, ?, ?, 'claimed', ?, ?) ON CONFLICT(occurrence_key) DO NOTHING")
