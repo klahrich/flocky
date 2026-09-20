@@ -16,7 +16,8 @@ export async function sendViaHerdr({ cwd, route, text, signal }) {
 
 function herdr(args, signal) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("herdr", args, { windowsHide: true });
+    const command = process.env.FLOCKY_HERDR_COMMAND || "herdr";
+    const child = spawn(command, args, { windowsHide: true, shell: command.toLowerCase().endsWith(".cmd") });
     let stdout = ""; let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });

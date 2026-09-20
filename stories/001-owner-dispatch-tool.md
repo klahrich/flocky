@@ -1,6 +1,6 @@
 ---
-status: in-progress
-stage: implementation
+status: completed
+stage: delivered
 created: 2026-09-20
 updated: 2026-09-20
 system: protocol-and-dispatch
