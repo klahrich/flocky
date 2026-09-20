@@ -60,7 +60,7 @@ async function addStream(ctx: any) {
   const id = await askId(ctx, "Stream ID", "e.g. landing");
   if (!id) return;
   if (config.agents[id]) throw new Error(`Agent/stream ${id} already exists`);
-  const path = await askExistingRepository(ctx);
+  const path = await askExistingRepository(ctx, `../${id}`);
   const description = await ask(ctx, "Stream description", "What does this stream own?");
   if (!path || !description) return;
   config.agents[id] = { path, description, routes: {} };
@@ -165,7 +165,7 @@ function save(cwd: string, config: Config) { const file = join(cwd, "flocky.conf
 function streamEntries(config: Config): Array<[string, Agent]> { return Object.entries(config.agents).filter(([id]) => id !== config.project.id); }
 function requireStream(config: Config, id: string): Agent { const stream = config.agents[id]; if (!stream || id === config.project.id) throw new Error(`Unknown stream ${id}`); return stream; }
 async function ask(ctx: any, title: string, placeholder: string) { const value = await ctx.ui.input(title, placeholder); return value?.trim(); }
-async function askExistingRepository(ctx: any) { while (true) { const path = await ask(ctx, "Repository path", "e.g. ../landing"); if (!path || isExistingRepository(ctx.cwd, path)) return path; ctx.ui.notify(`Stream repository does not exist or is not a Git repository: ${resolve(ctx.cwd, path)}`, "error"); } }
+async function askExistingRepository(ctx: any, suggestedPath = "../stream-id") { while (true) { const path = await ask(ctx, "Repository path", suggestedPath); if (!path || isExistingRepository(ctx.cwd, path)) return path; ctx.ui.notify(`Stream repository does not exist or is not a Git repository: ${resolve(ctx.cwd, path)}`, "error"); } }
 function isExistingRepository(cwd: string, path: string) { const absolute = resolve(cwd, path); return existsSync(absolute) && existsSync(join(absolute, ".git")); }
 async function askId(ctx: any, title: string, placeholder: string) { while (true) { const value = await ask(ctx, title, placeholder); if (!value || /^[a-z0-9][a-z0-9-]*$/.test(value)) return value; ctx.ui.notify("Use lowercase letters, digits, and hyphens.", "warning"); } }
 function requireTui(ctx: any, label: string) { if (ctx.mode !== "tui") throw new Error(`${label} requires Pi TUI mode`); }

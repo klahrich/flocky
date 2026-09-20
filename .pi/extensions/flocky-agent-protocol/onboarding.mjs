@@ -22,7 +22,7 @@ export async function ensureOnboarded(pi, ctx) {
     const id = await requiredInput(ctx, "Stream ID", "e.g. landing", /^[a-z0-9][a-z0-9-]*$/, "Use lowercase letters, digits, and hyphens.");
     if (!id) break;
     if (agents[id]) { ctx.ui.notify(`Stream ${id} already exists`, "warning"); continue; }
-    const path = await existingRepositoryPath(ctx);
+    const path = await existingRepositoryPath(ctx, `../${id}`);
     if (!path) break;
     const streamDescription = await requiredInput(ctx, "Stream description", "What does this stream own?", /[\s\S]+/, "A description is required.");
     if (streamDescription == null) break;
@@ -115,7 +115,7 @@ async function herdr(pi, args) {
 }
 function routeFromPane(pane) { return { paneId: pane.pane_id, workspaceId: pane.workspace_id, expectedCwd: pane.cwd, agent: "pi", verifiedAt: new Date().toISOString() }; }
 function samePath(left, right) { return typeof left === "string" && resolve(left).toLowerCase() === resolve(right).toLowerCase(); }
-async function existingRepositoryPath(ctx) { while (true) { const path = await requiredInput(ctx, "Repository path", "e.g. ../landing", /[\s\S]+/, "A repository path is required."); if (path == null) return null; const absolute = resolve(ctx.cwd, path); if (existsSync(absolute) && existsSync(join(absolute, ".git"))) return path; ctx.ui.notify(`Stream repository does not exist or is not a Git repository: ${absolute}`, "error"); } }
+async function existingRepositoryPath(ctx, suggestedPath = "../stream-id") { while (true) { const path = await requiredInput(ctx, "Repository path", suggestedPath, /[\s\S]+/, "A repository path is required."); if (path == null) return null; const absolute = resolve(ctx.cwd, path); if (existsSync(absolute) && existsSync(join(absolute, ".git"))) return path; ctx.ui.notify(`Stream repository does not exist or is not a Git repository: ${absolute}`, "error"); } }
 async function requiredInput(ctx, title, placeholder, matcher, error) { while (true) { const value = await ctx.ui.input(title, placeholder); if (value == null) return null; if (matcher.test(value.trim())) return value.trim(); ctx.ui.notify(error, "warning"); } }
 function writeConfig(file, config) { mkdirSync(dirname(file), { recursive: true }); writeAtomic(file, `${JSON.stringify(config, null, 2)}\n`); }
 function writeProjectDescription(cwd, id, description, agents) { const path = join(cwd, "projects", id, "PROJECT.md"); mkdirSync(dirname(path), { recursive: true }); const streams = Object.entries(agents).filter(([key]) => key !== id).map(([key, agent]) => `- **${key}** — ${agent.description}`).join("\n"); writeAtomic(path, `# ${id}\n\n${description}\n\n## Streams\n${streams}\n`); }
