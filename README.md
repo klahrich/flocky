@@ -28,6 +28,29 @@ node tools/set-stream.mjs --id landing --remove
 
 When Herdr is selected, onboarding scans managed Herdr workspaces for existing matching Pi panes and asks before saving any match. Each stream chosen for launch is created in its **own dedicated Herdr workspace**, never the owner workspace.
 
+## Delegate work: durable and transient
+
+Flocky now supports both:
+
+- **durable stream agents** for ongoing back-and-forth in a repository
+- **transient Herdr workers** for one-off execution
+
+The owner-facing mixed-mode tool is `flocky_delegate`.
+
+Typical behavior:
+
+- `mode=auto`, `workflow=single` → durable stream dispatch
+- `mode=transient`, `workflow=single` → one transient worker
+- `workflow=implement-review` → transient implementer + reviewer/tester workflow
+
+For transient coding with `workflow=implement-review`, Flocky previews a short approval message first so the user can switch to the durable stream instead before any transient workers are launched.
+
+The lower-level tools still exist when you want explicit control:
+
+- `flocky_dispatch`
+- `flocky_transient_dispatch`
+- `flocky_transient_implement_review`
+
 ## Manage configured streams and routes
 
 ```text

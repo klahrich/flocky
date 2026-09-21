@@ -2,6 +2,8 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+const ACTIVE_TRANSIENT_STATUSES = ["provisioning", "ready", "dispatched", "running"];
+
 export class FlockyStore {
   constructor(file) {
     mkdirSync(dirname(file), { recursive: true });
@@ -73,11 +75,37 @@ export class FlockyStore {
         created_at INTEGER NOT NULL,
         sent_at INTEGER
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS transient_runs (
+        run_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        parent_task_id TEXT,
+        workflow_id TEXT,
+        workflow_kind TEXT,
+        workflow_role TEXT,
+        agent_id TEXT NOT NULL UNIQUE,
+        stream_id TEXT NOT NULL,
+        source_repo_path TEXT NOT NULL,
+        checkout_path TEXT NOT NULL,
+        backend TEXT NOT NULL,
+        workspace_id TEXT,
+        pane_id TEXT,
+        status TEXT NOT NULL,
+        cleanup_policy TEXT NOT NULL,
+        cleanup_state TEXT NOT NULL,
+        result_status TEXT,
+        result_body TEXT,
+        last_error TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
     `);
     try { this.db.exec("ALTER TABLE outbox ADD COLUMN transport TEXT NOT NULL DEFAULT 'telegram'"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_status TEXT"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE tasks ADD COLUMN outcome_reason TEXT"); } catch { /* Existing databases already have the column. */ }
     try { this.db.exec("ALTER TABLE outbox ADD COLUMN delivered_transport TEXT"); } catch { /* Existing databases already have the column. */ }
+    try { this.db.exec("ALTER TABLE transient_runs ADD COLUMN workflow_kind TEXT"); } catch { /* Existing databases already have the column. */ }
+    try { this.db.exec("ALTER TABLE transient_runs ADD COLUMN workflow_role TEXT"); } catch { /* Existing databases already have the column. */ }
+    try { this.db.exec("ALTER TABLE transient_runs ADD COLUMN result_body TEXT"); } catch { /* Existing databases already have the column. */ }
   }
 
   saveScheduledJob(job) {
@@ -189,6 +217,111 @@ export class FlockyStore {
     return this.db.prepare("SELECT * FROM delivery_attempts WHERE outbox_id = ? ORDER BY id").all(outboxId);
   }
 
+  registerTransientRun(run) {
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO transient_runs (
+        run_id, task_id, parent_task_id, workflow_id, workflow_kind, workflow_role, agent_id, stream_id,
+        source_repo_path, checkout_path, backend, workspace_id, pane_id,
+        status, cleanup_policy, cleanup_state, result_status, result_body, last_error,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      run.runId,
+      run.taskId,
+      run.parentTaskId ?? null,
+      run.workflowId ?? null,
+      run.workflowKind ?? null,
+      run.workflowRole ?? null,
+      run.agentId,
+      run.streamId,
+      run.sourceRepoPath,
+      run.checkoutPath,
+      run.backend,
+      run.workspaceId ?? null,
+      run.paneId ?? null,
+      run.status ?? "provisioning",
+      run.cleanupPolicy,
+      run.cleanupState ?? "pending",
+      run.resultStatus ?? null,
+      run.resultBody ?? null,
+      run.lastError ?? null,
+      now,
+      now,
+    );
+  }
+
+  transientRun(runId) {
+    return this.db.prepare("SELECT * FROM transient_runs WHERE run_id = ?").get(runId) ?? null;
+  }
+
+  transientRunForAgentTask(agentId, taskId) {
+    return this.db.prepare(`
+      SELECT * FROM transient_runs
+      WHERE agent_id = ? AND task_id = ?
+        AND status IN (${ACTIVE_TRANSIENT_STATUSES.map(() => "?").join(", ")})
+      LIMIT 1
+    `).get(agentId, taskId, ...ACTIVE_TRANSIENT_STATUSES) ?? null;
+  }
+
+  transientRuns(limit = 5) {
+    return this.db.prepare("SELECT * FROM transient_runs ORDER BY created_at DESC LIMIT ?").all(limit);
+  }
+
+  transientRunsForWorkflow(workflowId) {
+    return this.db.prepare("SELECT * FROM transient_runs WHERE workflow_id = ? ORDER BY created_at, run_id").all(workflowId);
+  }
+
+  markTransientRunReady(runId, details = {}) {
+    return this.#updateTransientRun(runId, {
+      status: "ready",
+      workspace_id: details.workspaceId,
+      pane_id: details.paneId,
+      checkout_path: details.checkoutPath,
+      last_error: null,
+    });
+  }
+
+  markTransientRunDispatched(runId, details = {}) {
+    return this.#updateTransientRun(runId, {
+      status: "dispatched",
+      pane_id: details.paneId,
+      workspace_id: details.workspaceId,
+      last_error: null,
+    });
+  }
+
+  markTransientRunSettled(runId, resultStatus, resultBody) {
+    return this.#updateTransientRun(runId, {
+      status: "settled",
+      result_status: resultStatus,
+      result_body: resultBody,
+      last_error: null,
+    });
+  }
+
+  markTransientRunFailed(runId, error, resultBody) {
+    return this.#updateTransientRun(runId, {
+      status: "failed",
+      result_body: resultBody,
+      last_error: error ? String(error).slice(0, 2000) : null,
+    });
+  }
+
+  markTransientRunExpired(runId, error = "expired") {
+    return this.#updateTransientRun(runId, {
+      status: "expired",
+      last_error: error ? String(error).slice(0, 2000) : null,
+    });
+  }
+
+  markTransientRunCleaned(runId, cleanupState = "cleaned", error = null) {
+    return this.#updateTransientRun(runId, {
+      cleanup_state: cleanupState,
+      last_error: error ? String(error).slice(0, 2000) : null,
+    });
+  }
+
   completedTaskCount() {
     return this.db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status = 'settled'").get().count;
   }
@@ -196,9 +329,20 @@ export class FlockyStore {
   statusSummary() {
     const taskCounts = this.db.prepare("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status").all();
     const outboxCounts = this.db.prepare("SELECT status, COUNT(*) AS count FROM outbox GROUP BY status").all();
+    const transientRunCounts = this.db.prepare("SELECT status, COUNT(*) AS count FROM transient_runs GROUP BY status").all();
+    const recentTransientRuns = this.db.prepare("SELECT run_id, task_id, workflow_id, workflow_kind, workflow_role, agent_id, stream_id, backend, status, cleanup_policy, cleanup_state, result_status FROM transient_runs ORDER BY created_at DESC LIMIT 5").all();
     const latestFailure = this.db.prepare("SELECT task_id, recipient, transport, last_error FROM outbox WHERE last_error IS NOT NULL ORDER BY id DESC LIMIT 1").get();
-    return { taskCounts, outboxCounts, latestFailure: latestFailure ?? null };
+    return { taskCounts, outboxCounts, transientRunCounts, recentTransientRuns, latestFailure: latestFailure ?? null };
   }
 
   close() { this.db.close(); }
+
+  #updateTransientRun(runId, patch) {
+    const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
+    if (!entries.length) return false;
+    const setters = entries.map(([column]) => `${column} = ?`).join(", ");
+    const values = entries.map(([, value]) => value);
+    return this.db.prepare(`UPDATE transient_runs SET ${setters}, updated_at = ? WHERE run_id = ?`)
+      .run(...values, Date.now(), runId).changes === 1;
+  }
 }

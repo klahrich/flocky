@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { buildEnvelope, parseEnvelope, verifyEnvelope } from "./protocol.mjs";
 import { FlockyStore } from "./store.mjs";
 import { sendAsTelegramUser } from "./transport.mjs";
@@ -10,11 +10,14 @@ import { sendViaHerdr } from "./herdr.mjs";
 import { ensureOnboarded } from "./onboarding.mjs";
 import { registerFlockyCommands } from "./commands";
 import { applyAttachment, planAttachment } from "./attachment.mjs";
-import { parseOutcome } from "./outcome.mjs";
 import { deliverWithFallback } from "./delivery.mjs";
 import { loadProjectEnv } from "./config.mjs";
 import { areValidLocalTimes, normalizeLocalTimes } from "./schedule.mjs";
 import { NO_TEXT_FINAL_RESPONSE, buildResultBody } from "./result.mjs";
+import { classifyInboundEnvelope } from "./inbound-trust.mjs";
+import { buildImplementReviewApprovalPrompt, buildReviewerTask, finalImplementReviewStatus, renderImplementReviewSummary, shouldRunImplementReview } from "./implement-review.mjs";
+import { resolveDelegationPlan } from "./mixed-mode.mjs";
+import { cleanupTransientHerdrRun, provisionTransientHerdrRun, shouldCleanupTransientRun, transientAgentId, transientCheckoutPath } from "./transient-herdr.mjs";
 
 type Config = {
   project?: { id?: string };
@@ -83,6 +86,8 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       if (summary) {
         lines.push(`Tasks: ${summary.taskCounts.map((row: any) => `${row.status}=${row.count}`).join(", ") || "none"}`);
         lines.push(`Outbox: ${summary.outboxCounts.map((row: any) => `${row.status}=${row.count}`).join(", ") || "none"}`);
+        lines.push(`Transient runs: ${summary.transientRunCounts.map((row: any) => `${row.status}=${row.count}`).join(", ") || "none"}`);
+        if (summary.recentTransientRuns?.length) lines.push(`Recent transient: ${summary.recentTransientRuns.map((run: any) => `${run.run_id}:${run.workflow_role ?? "single"}:${run.status}/${run.cleanup_state}`).join(", ")}`);
         if (summary.latestFailure) lines.push(`Latest delivery error: ${summary.latestFailure.task_id} → ${summary.latestFailure.recipient} via ${summary.latestFailure.transport}: ${summary.latestFailure.last_error}`);
       }
       return { content: [{ type: "text", text: lines.join("\n") }], details: { active, agentId, summary } };
@@ -162,7 +167,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "flocky_dispatch", 
+    name: "flocky_dispatch",
     label: "Flocky Dispatch",
     description: "Dispatch a signed durable task from the project owner to one configured stream agent.",
     promptSnippet: "Dispatch a task to a configured Flocky stream agent",
@@ -176,26 +181,169 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
-      if (agentId !== config.project?.id) throw new Error("Only the project-owner agent can dispatch Flocky tasks");
-      if (!config.agents?.[params.stream] || params.stream === agentId) throw new Error(`Unknown stream: ${params.stream}`);
-      const answerBack = params.answerBack ?? true;
-      const selectedTransport = params.transport ?? transportFor(config, params.stream);
-      if (selectedTransport !== "telegram" && selectedTransport !== "herdr") throw new Error("Transport must be herdr or telegram");
-      if (!routeFor(config, params.stream, selectedTransport)) throw new Error(`No ${selectedTransport} route is configured for ${params.stream}`);
-      const taskId = params.taskId ?? randomUUID();
       const body = params.task.trim();
       if (!body) throw new Error("Task instructions cannot be empty");
-      const payload = buildEnvelope({ type: "task", task_id: taskId, from: agentId, to: params.stream, reply_to: agentId, answer_back: answerBack ? "yes" : "no" }, body, secret);
-      const prior = store.dispatchForTask(taskId);
-      if (prior && prior.payload !== payload) throw new Error(`Task ID ${taskId} already belongs to a different dispatch`);
-      store.recordDispatch(taskId, params.stream, selectedTransport, body, payload);
-      store.enqueueResult(taskId, params.stream, selectedTransport, payload);
-      await flushOutbox(ctx, signal);
-      const outbox = store.outboxForTask(taskId);
-      const state = outbox?.status ?? "pending";
+      const receipt = await executeDurableDispatch({
+        ctx,
+        signal,
+        store,
+        config,
+        ownerAgentId: agentId,
+        secret,
+        streamId: params.stream,
+        task: body,
+        answerBack: params.answerBack ?? true,
+        transport: params.transport,
+        taskId: params.taskId,
+      });
       return {
-        content: [{ type: "text", text: `Task ${taskId} dispatched to ${params.stream} via ${selectedTransport} (${state}).` }],
-        details: { taskId, stream: params.stream, transport: selectedTransport, deliveryStatus: state },
+        content: [{ type: "text", text: `Task ${receipt.taskId} dispatched to ${params.stream} via ${receipt.transport} (${receipt.deliveryStatus}).` }],
+        details: receipt,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "flocky_delegate",
+    label: "Flocky Delegate",
+    description: "Choose durable or transient execution for one repository task using one owner-facing tool.",
+    promptSnippet: "Choose durable or transient Flocky execution for one repository task",
+    promptGuidelines: ["Use flocky_delegate as the default mixed-mode owner tool when choosing between durable and transient execution. If transient implement-review is selected, preview it first so the user can approve or switch to durable."],
+    parameters: Type.Object({
+      stream: Type.String({ description: "Configured stream/repository ID" }),
+      task: Type.String({ description: "Complete task instructions and acceptance criteria" }),
+      mode: Type.Optional(Type.String({ description: "auto, durable, or transient" })),
+      workflow: Type.Optional(Type.String({ description: "single or implement-review" })),
+      cleanup: Type.Optional(Type.String({ description: "preserve, cleanup-on-success, or always-cleanup for transient runs" })),
+      transport: Type.Optional(Type.String({ description: "Optional durable transport override: herdr or telegram" })),
+      confirm: Type.Optional(Type.Boolean({ description: "Required to proceed when transient implement-review was previewed and approved by the user" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
+      const body = params.task.trim();
+      if (!body) throw new Error("Task instructions cannot be empty");
+      const plan = resolveDelegationPlan({ mode: params.mode, workflow: params.workflow });
+
+      if (plan.tool === "flocky_dispatch") {
+        const receipt = await executeDurableDispatch({
+          ctx,
+          signal,
+          store,
+          config,
+          ownerAgentId: agentId,
+          secret,
+          streamId: params.stream,
+          task: body,
+          answerBack: true,
+          transport: params.transport,
+        });
+        return {
+          content: [{ type: "text", text: `Delegated via durable ${params.stream} agent (${receipt.transport}, ${receipt.deliveryStatus}).` }],
+          details: { mode: "durable", workflow: "single", ...receipt },
+        };
+      }
+
+      if (plan.tool === "flocky_transient_dispatch") {
+        validateTransientDispatchContext(config, agentId, params.stream);
+        const cleanupPolicy = validateCleanupPolicy(params.cleanup);
+        const receipt = await executeTransientDispatch({ ctx, signal, store, config, ownerAgentId: agentId, secret, streamId: params.stream, task: body, cleanupPolicy });
+        return {
+          content: [{ type: "text", text: `Delegated via transient worker ${receipt.agentId} for ${params.stream}.` }],
+          details: { mode: "transient", workflow: "single", ...receipt },
+        };
+      }
+
+      validateTransientDispatchContext(config, agentId, params.stream);
+      const cleanupPolicy = validateCleanupPolicy(params.cleanup);
+      const outcome = await executeTransientImplementReview({
+        ctx,
+        signal,
+        store,
+        config,
+        ownerAgentId: agentId,
+        secret,
+        streamId: params.stream,
+        task: body,
+        cleanupPolicy,
+        confirm: params.confirm,
+      });
+      if (!outcome.approved) {
+        return {
+          content: [{ type: "text", text: `${outcome.preview} After approval, call flocky_delegate again with workflow=implement-review and confirm=true. To switch, call flocky_delegate with mode=durable.` }],
+          details: { mode: "transient", workflow: "implement-review", approved: false, stream: params.stream, cleanupPolicy, preview: outcome.preview },
+        };
+      }
+      return {
+        content: [{ type: "text", text: `Delegated via transient implement-review workflow ${outcome.workflowId} for ${params.stream}.` }],
+        details: { mode: "transient", workflow: "implement-review", ...outcome },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "flocky_transient_dispatch",
+    label: "Flocky Transient Dispatch",
+    description: "Spawn a one-off transient Herdr Pi worker for one signed delegated coding task.",
+    promptSnippet: "Spawn a transient Herdr worker for one repository task",
+    promptGuidelines: ["Use flocky_transient_dispatch when the user explicitly wants transient execution rather than a durable stream conversation."],
+    parameters: Type.Object({
+      stream: Type.String({ description: "Configured stream/repository ID" }),
+      task: Type.String({ description: "Complete task instructions and acceptance criteria" }),
+      cleanup: Type.Optional(Type.String({ description: "preserve, cleanup-on-success, or always-cleanup" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
+      validateTransientDispatchContext(config, agentId, params.stream);
+      const cleanupPolicy = validateCleanupPolicy(params.cleanup);
+      const body = params.task.trim();
+      if (!body) throw new Error("Task instructions cannot be empty");
+      const receipt = await executeTransientDispatch({ ctx, signal, store, config, ownerAgentId: agentId, secret, streamId: params.stream, task: body, cleanupPolicy });
+      return {
+        content: [{ type: "text", text: `Transient task ${receipt.taskId} dispatched to ${receipt.agentId} for ${params.stream} via Herdr.` }],
+        details: receipt,
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "flocky_transient_implement_review",
+    label: "Flocky Transient Implement Review",
+    description: "Preview or run a transient implementer worker followed by a transient reviewer/tester worker on the same checkout.",
+    promptSnippet: "Preview or run a transient implement-review workflow for one repository task",
+    promptGuidelines: ["Before using flocky_transient_implement_review for coding work, first preview it to the user and get explicit approval, with a clear option to switch to the durable stream instead."],
+    parameters: Type.Object({
+      stream: Type.String({ description: "Configured stream/repository ID" }),
+      task: Type.String({ description: "Complete task instructions and acceptance criteria" }),
+      cleanup: Type.Optional(Type.String({ description: "preserve, cleanup-on-success, or always-cleanup" })),
+      confirm: Type.Optional(Type.Boolean({ description: "Set true only after the user approves transient implement-review for this coding task" })),
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
+      validateTransientDispatchContext(config, agentId, params.stream);
+      const cleanupPolicy = validateCleanupPolicy(params.cleanup);
+      const body = params.task.trim();
+      if (!body) throw new Error("Task instructions cannot be empty");
+      const outcome = await executeTransientImplementReview({
+        ctx,
+        signal,
+        store,
+        config,
+        ownerAgentId: agentId,
+        secret,
+        streamId: params.stream,
+        task: body,
+        cleanupPolicy,
+        confirm: params.confirm,
+      });
+      if (!outcome.approved) {
+        return {
+          content: [{ type: "text", text: `${outcome.preview} After the user approves, call flocky_transient_implement_review again with confirm=true. If they want ongoing back-and-forth instead, use the durable stream.` }],
+          details: { approved: false, stream: params.stream, cleanupPolicy, preview: outcome.preview },
+        };
+      }
+      return {
+        content: [{ type: "text", text: `Transient implement-review workflow ${outcome.workflowId} started for ${params.stream}; implementer task ${outcome.taskId} is running.` }],
+        details: outcome,
       };
     },
   });
@@ -251,13 +399,18 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       return;
     }
     const { fields, body } = parsed;
-    if (!config.agents?.[fields.from]) {
-      ctx.ui.notify(`Ignored Flocky envelope from unknown agent ${fields.from}`, "warning");
+    const trusted = classifyInboundEnvelope({ parsed, config, store });
+    if (!trusted.trusted) {
+      ctx.ui.notify(`Ignored Flocky envelope from untrusted sender ${fields.from}: ${trusted.reason}`, "warning");
       return;
     }
     if (fields.type === "compact" && fields.from !== agentId) {
       ctx.compact({ customInstructions: "Compact at this signed request; preserve active task state and recent implementation details." });
       return { action: "handled" };
+    }
+    if (fields.type === "result") {
+      if (trusted.kind === "transient") return await handleTransientInboundResult({ ctx, store, config, ownerAgentId: agentId, secret, run: trusted.run, resultStatus: fields.status, resultBody: body });
+      return;
     }
     if (fields.type !== "task") return;
     if (fields.to !== agentId) {
@@ -328,24 +481,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     if (!store || !config || sending) return;
     sending = true;
     try {
-      for (const item of store.pendingOutbox()) {
-        const delivery = await deliverWithFallback({
-          item,
-          config,
-          send: async ({ transport, route }: any) => {
-            if (transport === "herdr") return sendViaHerdr({ cwd: ctx.cwd, route, text: item.payload, signal: signal ?? ctx.signal });
-            return sendAsTelegramUser({ cwd: ctx.cwd, config, target: route.target, text: item.payload, signal: signal ?? ctx.signal });
-          },
-          onAttempt: ({ transport, status, error }: any) => store?.recordDeliveryAttempt(item.id, transport, status, error),
-        });
-        if (delivery.delivered) {
-          store.markSent(item.id, delivery.transport);
-          ctx.ui.notify(`Delivered task ${item.task_id} to ${item.recipient} via ${delivery.transport}`, "info");
-        } else {
-          store.markRetry(item.id, delivery.error);
-          ctx.ui.notify(`Could not deliver task ${item.task_id}: ${delivery.error}`, "error");
-        }
-      }
+      await flushOutboxForDispatch({ ctx, signal, store, config });
     } finally { sending = false; }
   }
 
@@ -359,6 +495,243 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       ctx.compact({ customInstructions: "Preserve the current stream architecture, recent changes, validation results, and unresolved work." });
     }
   }
+}
+
+async function handleTransientInboundResult({ ctx, store, config, ownerAgentId, secret, run, resultStatus, resultBody }: { ctx: any; store: FlockyStore; config: Config; ownerAgentId: string; secret: string; run: any; resultStatus: string; resultBody: string }) {
+  store.markTransientRunSettled(run.run_id, resultStatus, resultBody);
+  const settledRun = store.transientRun(run.run_id) ?? { ...run, status: "settled", result_status: resultStatus, result_body: resultBody };
+  if (settledRun.workflow_kind === "implement-review") {
+    return await handleImplementReviewInboundResult({ ctx, store, config, ownerAgentId, secret, run: settledRun });
+  }
+  await settlePlainTransientRun(ctx, store, settledRun, resultStatus);
+  return;
+}
+
+async function handleImplementReviewInboundResult({ ctx, store, config, ownerAgentId, secret, run }: { ctx: any; store: FlockyStore; config: Config; ownerAgentId: string; secret: string; run: any }) {
+  const workflowRuns = store.transientRunsForWorkflow(run.workflow_id);
+  const implementer = workflowRuns.find((candidate: any) => candidate.workflow_role === "implementer") ?? (run.workflow_role === "implementer" ? run : null);
+  const reviewer = workflowRuns.find((candidate: any) => candidate.workflow_role === "reviewer") ?? (run.workflow_role === "reviewer" ? run : null);
+  if (!implementer) return;
+
+  if (run.workflow_role === "implementer") {
+    if (!shouldRunImplementReview(run.result_status)) {
+      return await finalizeImplementReviewWorkflow({ ctx, store, implementer, reviewer: null });
+    }
+    try {
+      await cleanupTransientHerdrRun({ ownerCwd: ctx.cwd, run, removeCheckout: false });
+      store.markTransientRunCleaned(run.run_id, "workspace_closed");
+    } catch (error) {
+      store.markTransientRunCleaned(run.run_id, "workspace_close_failed", message(error));
+      ctx.ui.notify(`Could not close implementer workspace for ${run.run_id}: ${message(error)}`, "warning");
+    }
+
+    const originalTask = store.dispatchForTask(run.task_id)?.body ?? "";
+    const reviewerTask = buildReviewerTask({
+      originalTask,
+      implementerTaskId: run.task_id,
+      implementerStatus: run.result_status,
+      implementerReport: run.result_body,
+    });
+    try {
+      const reviewerReceipt = await spawnTransientRun({
+        ctx,
+        store,
+        config,
+        ownerAgentId,
+        secret,
+        streamId: run.stream_id,
+        task: reviewerTask,
+        cleanupPolicy: run.cleanup_policy,
+        workflowId: run.workflow_id,
+        workflowKind: "implement-review",
+        workflowRole: "reviewer",
+        parentTaskId: run.task_id,
+        checkoutPath: run.checkout_path,
+        signal: ctx.signal,
+      });
+      ctx.ui.notify(`Started transient reviewer ${reviewerReceipt.agentId} for workflow ${run.workflow_id}.`, "info");
+      return { action: "handled" };
+    } catch (error: any) {
+      const reviewerRun = error?.flockyRunId ? store.transientRun(error.flockyRunId) : null;
+      return await finalizeImplementReviewWorkflow({ ctx, store, implementer: store.transientRun(implementer.run_id) ?? implementer, reviewer: reviewerRun, reviewerLaunchError: message(error) });
+    }
+  }
+
+  return await finalizeImplementReviewWorkflow({ ctx, store, implementer, reviewer: run });
+}
+
+async function finalizeImplementReviewWorkflow({ ctx, store, implementer, reviewer, reviewerLaunchError }: { ctx: any; store: FlockyStore; implementer: any; reviewer: any; reviewerLaunchError?: string }) {
+  const finalStatus = finalImplementReviewStatus({
+    implementerStatus: implementer?.result_status,
+    reviewerStatus: reviewer?.result_status,
+    reviewerLaunchError,
+  });
+  const cleanupCarrier = reviewer ?? implementer;
+  if (cleanupCarrier && shouldCleanupTransientRun(cleanupCarrier.cleanup_policy, finalStatus)) {
+    try {
+      await cleanupTransientHerdrRun({ ownerCwd: ctx.cwd, run: cleanupCarrier });
+      store.markTransientRunCleaned(cleanupCarrier.run_id, "cleaned");
+    } catch (error) {
+      store.markTransientRunCleaned(cleanupCarrier.run_id, "cleanup_failed", message(error));
+      ctx.ui.notify(`Could not clean workflow ${cleanupCarrier.workflow_id ?? cleanupCarrier.run_id}: ${message(error)}`, "error");
+    }
+  } else if (cleanupCarrier) {
+    store.markTransientRunCleaned(cleanupCarrier.run_id, "preserved");
+  }
+  const summary = renderImplementReviewSummary({
+    workflowId: implementer?.workflow_id ?? reviewer?.workflow_id ?? "unknown",
+    streamId: implementer?.stream_id ?? reviewer?.stream_id ?? "unknown",
+    implementer,
+    reviewer,
+    reviewerLaunchError,
+  });
+  return { action: "transform", text: `A transient implement-review workflow has completed. Review the combined report below and respond to the user with a concise synthesis.\n\n${summary}` };
+}
+
+async function settlePlainTransientRun(ctx: any, store: FlockyStore, run: any, resultStatus: string) {
+  if (shouldCleanupTransientRun(run.cleanup_policy, resultStatus)) {
+    try {
+      await cleanupTransientHerdrRun({ ownerCwd: ctx.cwd, run });
+      store.markTransientRunCleaned(run.run_id, "cleaned");
+      ctx.ui.notify(`Cleaned transient run ${run.run_id} after ${resultStatus} result.`, "info");
+    } catch (error) {
+      store.markTransientRunCleaned(run.run_id, "cleanup_failed", message(error));
+      ctx.ui.notify(`Could not clean transient run ${run.run_id}: ${message(error)}`, "error");
+    }
+  } else {
+    store.markTransientRunCleaned(run.run_id, "preserved");
+  }
+}
+
+async function executeDurableDispatch({ ctx, signal, store, config, ownerAgentId, secret, streamId, task, answerBack, transport, taskId }: { ctx: any; signal?: AbortSignal; store: FlockyStore; config: Config; ownerAgentId: string; secret: string; streamId: string; task: string; answerBack: boolean; transport?: string; taskId?: string }) {
+  if (ownerAgentId !== config.project?.id) throw new Error("Only the project-owner agent can dispatch Flocky tasks");
+  if (!config.agents?.[streamId] || streamId === ownerAgentId) throw new Error(`Unknown stream: ${streamId}`);
+  const selectedTransport = transport ?? transportFor(config, streamId);
+  if (selectedTransport !== "telegram" && selectedTransport !== "herdr") throw new Error("Transport must be herdr or telegram");
+  if (!routeFor(config, streamId, selectedTransport)) throw new Error(`No ${selectedTransport} route is configured for ${streamId}`);
+  const durableTaskId = taskId ?? randomUUID();
+  const payload = buildEnvelope({ type: "task", task_id: durableTaskId, from: ownerAgentId, to: streamId, reply_to: ownerAgentId, answer_back: answerBack ? "yes" : "no" }, task, secret);
+  const prior = store.dispatchForTask(durableTaskId);
+  if (prior && prior.payload !== payload) throw new Error(`Task ID ${durableTaskId} already belongs to a different dispatch`);
+  store.recordDispatch(durableTaskId, streamId, selectedTransport, task, payload);
+  store.enqueueResult(durableTaskId, streamId, selectedTransport, payload);
+  await flushOutboxForDispatch({ ctx, signal, store, config });
+  const outbox = store.outboxForTask(durableTaskId);
+  return { taskId: durableTaskId, stream: streamId, transport: selectedTransport, deliveryStatus: outbox?.status ?? "pending" };
+}
+
+async function executeTransientDispatch({ ctx, signal, store, config, ownerAgentId, secret, streamId, task, cleanupPolicy, workflowId, workflowKind, workflowRole, parentTaskId, checkoutPath }: { ctx: any; signal?: AbortSignal; store: FlockyStore; config: Config; ownerAgentId: string; secret: string; streamId: string; task: string; cleanupPolicy: string; workflowId?: string; workflowKind?: string; workflowRole?: string; parentTaskId?: string; checkoutPath?: string }) {
+  try {
+    return await spawnTransientRun({ ctx, store, config, ownerAgentId, secret, streamId, task, cleanupPolicy, workflowId, workflowKind, workflowRole, parentTaskId, checkoutPath, signal });
+  } catch (error: any) {
+    await maybeCleanupFailedTransientRun(ctx.cwd, store, error?.flockyRunId, cleanupPolicy, error);
+    throw error;
+  }
+}
+
+async function executeTransientImplementReview({ ctx, signal, store, config, ownerAgentId, secret, streamId, task, cleanupPolicy, confirm }: { ctx: any; signal?: AbortSignal; store: FlockyStore; config: Config; ownerAgentId: string; secret: string; streamId: string; task: string; cleanupPolicy: string; confirm?: boolean }) {
+  if (!confirm) return { approved: false, preview: buildImplementReviewApprovalPrompt({ streamId }) };
+  const workflowId = randomUUID();
+  const receipt = await executeTransientDispatch({
+    ctx,
+    signal,
+    store,
+    config,
+    ownerAgentId,
+    secret,
+    streamId,
+    task,
+    cleanupPolicy,
+    workflowId,
+    workflowKind: "implement-review",
+    workflowRole: "implementer",
+  });
+  return { approved: true, workflowId, ...receipt };
+}
+
+async function spawnTransientRun({ ctx, store, config, ownerAgentId, secret, streamId, task, cleanupPolicy, workflowId, workflowKind, workflowRole, parentTaskId, checkoutPath, signal }: { ctx: any; store: FlockyStore; config: Config; ownerAgentId: string; secret: string; streamId: string; task: string; cleanupPolicy: string; workflowId?: string; workflowKind?: string; workflowRole?: string; parentTaskId?: string; checkoutPath?: string; signal?: AbortSignal }) {
+  const stream = config.agents?.[streamId];
+  if (!stream?.path) throw new Error(`Stream ${streamId} has no repository path`);
+  const taskId = randomUUID();
+  const runId = randomUUID();
+  const agentId = transientAgentId(runId);
+  const sourceRepoPath = resolve(ctx.cwd, stream.path);
+  const transientCheckout = checkoutPath ? resolve(checkoutPath) : transientCheckoutPath(ctx.cwd, runId);
+  store.registerTransientRun({
+    runId,
+    taskId,
+    parentTaskId,
+    workflowId,
+    workflowKind,
+    workflowRole,
+    agentId,
+    streamId,
+    sourceRepoPath,
+    checkoutPath: transientCheckout,
+    backend: "herdr",
+    cleanupPolicy,
+    status: "provisioning",
+  });
+  try {
+    const provisioned = await provisionTransientHerdrRun({ ownerCwd: ctx.cwd, config, streamId, ownerAgentId, cleanupPolicy, runId, agentId, protocolSecret: secret, checkoutPath });
+    store.markTransientRunReady(runId, { workspaceId: provisioned.workspaceId, paneId: provisioned.paneId, checkoutPath: provisioned.checkoutPath });
+    const payload = buildEnvelope({ type: "task", task_id: taskId, from: ownerAgentId, to: agentId, reply_to: ownerAgentId, answer_back: "yes" }, task, secret);
+    store.recordDispatch(taskId, agentId, "herdr", task, payload);
+    await sendViaHerdr({ cwd: ctx.cwd, route: provisioned.route, text: payload, signal });
+    store.markTransientRunDispatched(runId, { workspaceId: provisioned.workspaceId, paneId: provisioned.paneId });
+    return { taskId, runId, agentId, stream: streamId, backend: "herdr", cleanupPolicy, workspaceId: provisioned.workspaceId, paneId: provisioned.paneId, checkoutPath: provisioned.checkoutPath, workflowId, workflowKind, workflowRole };
+  } catch (error) {
+    store.markTransientRunFailed(runId, message(error));
+    const wrapped = error instanceof Error ? error : new Error(String(error));
+    (wrapped as any).flockyRunId = runId;
+    throw wrapped;
+  }
+}
+
+async function maybeCleanupFailedTransientRun(ownerCwd: string, store: FlockyStore, runId: string | undefined, cleanupPolicy: string, failure: unknown) {
+  if (cleanupPolicy !== "always-cleanup" || !runId) return;
+  const run = store.transientRun(runId);
+  if (!run) return;
+  try {
+    await cleanupTransientHerdrRun({ ownerCwd, run });
+    store.markTransientRunCleaned(runId, "cleaned");
+  } catch (cleanupError) {
+    store.markTransientRunCleaned(runId, "cleanup_failed", `${message(failure)}; cleanup: ${message(cleanupError)}`);
+  }
+}
+
+async function flushOutboxForDispatch({ ctx, signal, store, config }: { ctx: any; signal?: AbortSignal; store: FlockyStore; config: Config }) {
+  for (const item of store.pendingOutbox()) {
+    const delivery = await deliverWithFallback({
+      item,
+      config,
+      send: async ({ transport, route }: any) => {
+        if (transport === "herdr") return sendViaHerdr({ cwd: ctx.cwd, route, text: item.payload, signal: signal ?? ctx.signal });
+        return sendAsTelegramUser({ cwd: ctx.cwd, config, target: route.target, text: item.payload, signal: signal ?? ctx.signal });
+      },
+      onAttempt: ({ transport, status, error }: any) => store.recordDeliveryAttempt(item.id, transport, status, error),
+    });
+    if (delivery.delivered) {
+      store.markSent(item.id, delivery.transport);
+      ctx.ui.notify(`Delivered task ${item.task_id} to ${item.recipient} via ${delivery.transport}`, "info");
+    } else {
+      store.markRetry(item.id, delivery.error);
+      ctx.ui.notify(`Could not deliver task ${item.task_id}: ${delivery.error}`, "error");
+    }
+  }
+}
+
+function validateTransientDispatchContext(config: Config, ownerAgentId: string | undefined, streamId: string) {
+  if (ownerAgentId !== config.project?.id) throw new Error("Only the project-owner agent can dispatch transient Flocky tasks");
+  if (process.env.HERDR_ENV !== "1") throw new Error("Transient Herdr dispatch requires the owner Pi session to run inside Herdr");
+  if (!config.agents?.[streamId] || streamId === ownerAgentId) throw new Error(`Unknown stream: ${streamId}`);
+  if (!config.agents?.[ownerAgentId ?? ""]?.routes?.herdr?.paneId) throw new Error("The project owner needs a configured Herdr route before transient workers can report back");
+}
+
+function validateCleanupPolicy(cleanup: string | undefined) {
+  const cleanupPolicy = cleanup ?? "cleanup-on-success";
+  if (!["preserve", "cleanup-on-success", "always-cleanup"].includes(cleanupPolicy)) throw new Error("cleanup must be preserve, cleanup-on-success, or always-cleanup");
+  return cleanupPolicy;
 }
 
 function loadConfig(cwd: string): Config {
@@ -393,7 +766,7 @@ function transportFor(config: Config, agent: string): "telegram" | "herdr" | und
   return undefined;
 }
 
-function routeFor(config: Config, agent: string, transport: string): any {
+function routeFor(config: Config, agent: string, transport: string | undefined): any {
   const route = config.agents?.[agent];
   if (transport === "telegram") {
     const target = route?.routes?.telegram?.target ?? route?.telegramTarget;

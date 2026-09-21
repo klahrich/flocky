@@ -7,11 +7,11 @@ import { buildEnvelope } from "../.pi/extensions/flocky-agent-protocol/protocol.
 import { loadProjectEnv } from "../.pi/extensions/flocky-agent-protocol/config.mjs";
 import { sendAsTelegramUser } from "../.pi/extensions/flocky-agent-protocol/transport.mjs";
 import { sendViaHerdr } from "../.pi/extensions/flocky-agent-protocol/herdr.mjs";
+import { valueArg } from "./cli-args.mjs";
 
 const args = process.argv.slice(2);
-const value = (name) => args[args.indexOf(name) + 1];
-const jobId = value("--job");
-const cwd = resolve(value("--cwd") ?? process.cwd());
+const jobId = valueArg(args, "--job");
+const cwd = resolve(valueArg(args, "--cwd") ?? process.cwd());
 if (!jobId) throw new Error("Usage: node tools/flocky-schedule.mjs --job <schedule-id> [--cwd <project-dir>] [--occurrence <key>]");
 loadProjectEnv(cwd);
 const configPath = join(cwd, "flocky.config.json");
@@ -29,7 +29,7 @@ try {
   if (!recipient) throw new Error(`Schedule recipient ${job.recipient} is no longer configured`);
   const route = job.transport === "telegram" ? recipient.routes?.telegram?.target ?? recipient.telegramTarget : recipient.routes?.herdr;
   if (!route) throw new Error(`No ${job.transport} route is configured for ${job.recipient}`);
-  const occurrence = value("--occurrence") ?? `${job.id}:${occurrenceHour(new Date(), job.timezone)}`;
+  const occurrence = valueArg(args, "--occurrence") ?? `${job.id}:${occurrenceHour(new Date(), job.timezone)}`;
   const taskId = randomUUID();
   if (!store.claimScheduledRun(occurrence, job.id, taskId)) { console.log(`Skipped duplicate occurrence ${occurrence}`); process.exitCode = 0; }
   else {

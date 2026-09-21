@@ -30,3 +30,87 @@ test("store deduplicates tasks and retains an outbox retry", () => {
     store.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("store tracks transient run trust lifecycle", () => {
+  const dir = mkdtempSync(join(tmpdir(), "flocky-transient-store-"));
+  try {
+    const store = new FlockyStore(join(dir, "flocky.db"));
+    store.registerTransientRun({
+      runId: "run-1",
+      taskId: "task-1",
+      agentId: "transient-run-1",
+      streamId: "landing",
+      sourceRepoPath: "C:/repo",
+      checkoutPath: "C:/repo/.pi/flocky/transient/run-1/repo",
+      backend: "herdr",
+      cleanupPolicy: "cleanup-on-success",
+    });
+    assert.equal(store.transientRunForAgentTask("transient-run-1", "task-1").run_id, "run-1");
+    store.markTransientRunReady("run-1", { workspaceId: "w1", paneId: "w1:p1" });
+    store.markTransientRunDispatched("run-1", { workspaceId: "w1", paneId: "w1:p1" });
+    let summary = store.statusSummary();
+    assert.equal(summary.transientRunCounts.find((row) => row.status === "dispatched").count, 1);
+    store.markTransientRunSettled("run-1", "success", "RESULT: SUCCESS\nSummary: ok");
+    assert.equal(store.transientRunForAgentTask("transient-run-1", "task-1"), null);
+    store.markTransientRunCleaned("run-1");
+    const run = store.transientRun("run-1");
+    assert.equal(run.result_status, "success");
+    assert.equal(run.result_body, "RESULT: SUCCESS\nSummary: ok");
+    assert.equal(run.cleanup_state, "cleaned");
+    store.registerTransientRun({
+      runId: "run-2",
+      taskId: "task-2",
+      agentId: "transient-run-2",
+      streamId: "landing",
+      sourceRepoPath: "C:/repo",
+      checkoutPath: "C:/repo/.pi/flocky/transient/run-2/repo",
+      backend: "herdr",
+      cleanupPolicy: "preserve",
+    });
+    store.markTransientRunFailed("run-2", "launch failed");
+    assert.equal(store.transientRunForAgentTask("transient-run-2", "task-2"), null);
+    summary = store.statusSummary();
+    assert.equal(summary.recentTransientRuns.length >= 2, true);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("store can retrieve workflow-linked transient runs in order", () => {
+  const dir = mkdtempSync(join(tmpdir(), "flocky-workflow-store-"));
+  try {
+    const store = new FlockyStore(join(dir, "flocky.db"));
+    store.registerTransientRun({
+      runId: "run-1",
+      taskId: "task-1",
+      workflowId: "wf-1",
+      workflowKind: "implement-review",
+      workflowRole: "implementer",
+      agentId: "transient-run-1",
+      streamId: "landing",
+      sourceRepoPath: "C:/repo",
+      checkoutPath: "C:/repo/.pi/flocky/transient/run-1/repo",
+      backend: "herdr",
+      cleanupPolicy: "preserve",
+    });
+    store.registerTransientRun({
+      runId: "run-2",
+      taskId: "task-2",
+      parentTaskId: "task-1",
+      workflowId: "wf-1",
+      workflowKind: "implement-review",
+      workflowRole: "reviewer",
+      agentId: "transient-run-2",
+      streamId: "landing",
+      sourceRepoPath: "C:/repo",
+      checkoutPath: "C:/repo/.pi/flocky/transient/run-1/repo",
+      backend: "herdr",
+      cleanupPolicy: "preserve",
+    });
+    store.markTransientRunSettled("run-1", "success", "implementer report");
+    store.markTransientRunSettled("run-2", "blocked", "reviewer report");
+    const workflowRuns = store.transientRunsForWorkflow("wf-1");
+    assert.deepEqual(workflowRuns.map((run) => run.workflow_role), ["implementer", "reviewer"]);
+    assert.deepEqual(workflowRuns.map((run) => run.result_body), ["implementer report", "reviewer report"]);
+    store.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
