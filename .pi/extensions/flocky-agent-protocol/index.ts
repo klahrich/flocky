@@ -9,11 +9,12 @@ import { sendAsTelegramUser } from "./transport.mjs";
 import { sendViaHerdr } from "./herdr.mjs";
 import { ensureOnboarded } from "./onboarding.mjs";
 import { registerFlockyCommands } from "./commands";
-import { applyAttachment, planAttachment } from "./attachment.mjs";
+import { applyAttachment, applyAttachments, planAttachment, planAttachments } from "./attachment.mjs";
 import { deliverWithFallback } from "./delivery.mjs";
 import { loadProjectEnv } from "./config.mjs";
 import { areValidLocalTimes, normalizeLocalTimes } from "./schedule.mjs";
 import { NO_TEXT_FINAL_RESPONSE, buildResultBody } from "./result.mjs";
+import { ensureInlineTaskBody } from "./message.mjs";
 import { classifyInboundEnvelope } from "./inbound-trust.mjs";
 import { buildImplementReviewApprovalPrompt, buildReviewerTask, finalImplementReviewStatus, renderImplementReviewSummary, shouldRunImplementReview } from "./implement-review.mjs";
 import { resolveDelegationPlan } from "./mixed-mode.mjs";
@@ -37,13 +38,14 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   let activeTaskId: string | undefined;
   let latestAnswer = "";
   let sending = false;
+  let flushRequested = false;
 
   pi.registerTool({
     name: "flocky_complete",
     label: "Flocky Complete",
     description: "Record the one structured terminal outcome for the active delegated Flocky task.",
     promptSnippet: "Record the validated structured completion of the active Flocky task",
-    promptGuidelines: ["For every delegated Flocky task, call flocky_complete exactly once after work and validation; do not claim a successful Flocky outcome in prose alone."],
+    promptGuidelines: ["For every delegated Flocky task, call flocky_complete exactly once after work and validation; do not claim a successful Flocky outcome in prose alone.", "Answer-backs are compact by design; put long detail in repo artifacts such as files, docs, or commit history and mention only the key refs in the completion fields."],
     parameters: Type.Object({
       status: Type.String({ description: "success, partial, blocked, failed, or refused" }),
       summary: Type.String(),
@@ -53,13 +55,14 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       reason: Type.String(),
       safeState: Type.String(),
       nextAction: Type.String(),
+      artifacts: Type.Optional(Type.Array(Type.String())),
     }),
     async execute(_toolCallId, params) {
       if (!store || !activeTaskId) throw new Error("flocky_complete requires an active delegated Flocky task");
       if (!["success", "partial", "blocked", "failed", "refused"].includes(params.status)) throw new Error("Invalid Flocky completion status");
       if (!params.summary.trim() || !params.safeState.trim() || !params.nextAction.trim()) throw new Error("summary, safeState, and nextAction are required");
       if (params.status === "success" && (params.validation.length === 0 || params.notCompleted.length > 0)) throw new Error("success requires validation evidence and no remaining work");
-      const completion = { ...params, status: params.status as "success" | "partial" | "blocked" | "failed" | "refused" };
+      const completion = { ...params, artifacts: params.artifacts ?? [], status: params.status as "success" | "partial" | "blocked" | "failed" | "refused" };
       if (store.completionForTask(activeTaskId)) throw new Error("This Flocky task already has a completion record");
       store.recordCompletion(activeTaskId, completion);
       return { content: [{ type: "text", text: `Recorded ${completion.status} completion for ${activeTaskId}.` }], details: { taskId: activeTaskId, completion }, terminate: true };
@@ -158,9 +161,11 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       if (!store || !config || !agentId || agentId !== config.project?.id) throw new Error("Only an active project owner can create schedules");
       if (!config.agents?.[params.recipient] || params.recipient === agentId) throw new Error(`Unknown stream: ${params.recipient}`);
       if (!params.task.trim() || !/^\S+(\s+\S+){4}$/.test(params.cron.trim())) throw new Error("A non-empty task and five-field cron schedule are required");
+      const task = ensureInlineTaskBody(params.task);
       const transport = params.transport ?? transportFor(config, params.recipient);
+      if (transport !== "telegram") throw new Error("Scheduled jobs currently support telegram only; keep detailed context in repo artifacts and send a compact inline task.");
       if (!routeFor(config, params.recipient, transport)) throw new Error(`No ${transport} route is configured for ${params.recipient}`);
-      const job = { id: params.id, recipient: params.recipient, task: params.task.trim(), cron: params.cron.trim(), timezone: params.timezone ?? "America/Toronto", answerBack: params.answerBack ?? true, transport, concurrencyKey: params.concurrencyKey ?? params.recipient, missedRunPolicy: params.missedRunPolicy ?? "skip", actionPolicy: "internal_task", enabled: true };
+      const job = { id: params.id, recipient: params.recipient, task, cron: params.cron.trim(), timezone: params.timezone ?? "America/Toronto", answerBack: params.answerBack ?? true, transport, concurrencyKey: params.concurrencyKey ?? params.recipient, missedRunPolicy: params.missedRunPolicy ?? "skip", actionPolicy: "internal_task", enabled: true };
       store.saveScheduledJob(job);
       return { content: [{ type: "text", text: `Created schedule ${job.id}: ${job.cron} (${job.timezone}) → ${job.recipient} via ${job.transport}. Install its Windows trigger on the scheduler host before it can run.` }], details: job };
     },
@@ -171,7 +176,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     label: "Flocky Dispatch",
     description: "Dispatch a signed durable task from the project owner to one configured stream agent.",
     promptSnippet: "Dispatch a task to a configured Flocky stream agent",
-    promptGuidelines: ["Use flocky_dispatch to delegate repository work to a configured Flocky stream; do not manually compose Flocky envelopes."],
+    promptGuidelines: ["Use flocky_dispatch to delegate repository work to a configured Flocky stream; do not manually compose Flocky envelopes.", "Keep inline task text compact. Put longer specifications in repo artifacts such as files, docs, or commit history, then dispatch a concise task that references them."],
     parameters: Type.Object({
       stream: Type.String({ description: "Configured stream ID" }),
       task: Type.String({ description: "Complete task instructions and acceptance criteria" }),
@@ -181,8 +186,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
-      const body = params.task.trim();
-      if (!body) throw new Error("Task instructions cannot be empty");
+      const body = ensureInlineTaskBody(params.task);
       const receipt = await executeDurableDispatch({
         ctx,
         signal,
@@ -220,8 +224,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (!store || !config || !agentId || !secret) throw new Error("Flocky is not configured; complete onboarding first");
-      const body = params.task.trim();
-      if (!body) throw new Error("Task instructions cannot be empty");
+      const body = ensureInlineTaskBody(params.task);
       const plan = resolveDelegationPlan({ mode: params.mode, workflow: params.workflow });
 
       if (plan.tool === "flocky_dispatch") {
@@ -370,6 +373,30 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerTool({
+    name: "flocky_attach_streams",
+    label: "Attach Flocky Streams",
+    description: "Preview or attach Flocky-managed files for multiple registered stream repositories at once.",
+    promptSnippet: "Preview or attach multiple registered stream repositories to Flocky at once",
+    promptGuidelines: ["Use flocky_attach_streams when the user wants to refresh or attach several configured streams in one project-level action."],
+    parameters: Type.Object({
+      streams: Type.Optional(Type.Array(Type.String({ description: "Registered stream ID" }))),
+      confirm: Type.Boolean({ description: "False returns the exact multi-stream change plan; true applies that reviewed plan" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!config || !agentId) throw new Error("Flocky is not configured; complete onboarding first");
+      if (agentId !== config.project?.id) throw new Error("Only the project-owner agent can attach streams");
+      const review = planAttachments({ ownerCwd: ctx.cwd, config, streamIds: params.streams ?? [] });
+      const planText = renderAttachmentReview(review);
+      if (!params.confirm) {
+        return { content: [{ type: "text", text: `Attachment plan for ${review.plans.length} stream(s):\n${planText}\n\nReview this plan, then call flocky_attach_streams with confirm=true.` }], details: { streamIds: review.streamIds, plans: review.plans.map((plan: any) => ({ stream: plan.streamId, actions: plan.actions })), errors: review.errors, applied: false } };
+      }
+      if (review.errors.length) throw new Error(`Cannot attach streams:\n${planText}`);
+      const applied = applyAttachments({ ownerCwd: ctx.cwd, config, streamIds: params.streams ?? [] });
+      return { content: [{ type: "text", text: `Attached ${applied.length} stream(s): ${applied.map((plan: any) => plan.streamId).join(", ")}. Start/reload Pi in those repositories to activate the update.` }], details: { streamIds: applied.map((plan: any) => plan.streamId), plans: applied.map((plan: any) => ({ stream: plan.streamId, actions: plan.actions })), errors: [], applied: true } };
+    },
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     try {
       loadProjectEnv(ctx.cwd);
@@ -435,7 +462,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       activeTaskId = parsed.fields.task_id;
       latestAnswer = "";
       store.startTask(activeTaskId);
-      return { systemPrompt: `${event.systemPrompt}\n\nThis is an active delegated Flocky task. Before ending, call flocky_complete exactly once with the validated terminal outcome. A successful prose answer without flocky_complete will be reported as unverified partial.` };
+      return { systemPrompt: `${event.systemPrompt}\n\nThis is an active delegated Flocky task. Before ending, call flocky_complete exactly once with the validated terminal outcome. Keep any answer-back compact and put long detail in repo artifacts such as files, docs, or commit history. A successful prose answer without flocky_complete will be reported as unverified partial.` };
     } else {
       activeTaskId = undefined;
       latestAnswer = "";
@@ -461,9 +488,9 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
       : { status: "partial", declared: false, reason: "Stream settled without calling flocky_complete; outcome is unverified." };
     store.settleTask(taskId, answer, outcome.status, outcome.reason);
 
-    const task = parseEnvelope(findTaskRawMessage(ctx, taskId));
-    if (!task || task.fields.answer_back !== "yes") return;
-    const recipient = task.fields.from;
+    const task = store.task(taskId);
+    if (!task || !task.answer_back) return;
+    const recipient = task.sender;
     const transport = transportFor(config, recipient);
     if (!transport) {
       store.failTask(taskId);
@@ -478,10 +505,14 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
   });
 
   async function flushOutbox(ctx: any, signal?: AbortSignal) {
-    if (!store || !config || sending) return;
+    if (!store || !config) return;
+    if (sending) { flushRequested = true; return; }
     sending = true;
     try {
-      await flushOutboxForDispatch({ ctx, signal, store, config });
+      do {
+        flushRequested = false;
+        await flushOutboxForDispatch({ ctx, signal, store, config });
+      } while (flushRequested);
     } finally { sending = false; }
   }
 
@@ -610,10 +641,11 @@ async function executeDurableDispatch({ ctx, signal, store, config, ownerAgentId
   if (selectedTransport !== "telegram" && selectedTransport !== "herdr") throw new Error("Transport must be herdr or telegram");
   if (!routeFor(config, streamId, selectedTransport)) throw new Error(`No ${selectedTransport} route is configured for ${streamId}`);
   const durableTaskId = taskId ?? randomUUID();
-  const payload = buildEnvelope({ type: "task", task_id: durableTaskId, from: ownerAgentId, to: streamId, reply_to: ownerAgentId, answer_back: answerBack ? "yes" : "no" }, task, secret);
+  const body = ensureInlineTaskBody(task);
+  const payload = buildEnvelope({ type: "task", task_id: durableTaskId, from: ownerAgentId, to: streamId, reply_to: ownerAgentId, answer_back: answerBack ? "yes" : "no" }, body, secret);
   const prior = store.dispatchForTask(durableTaskId);
   if (prior && prior.payload !== payload) throw new Error(`Task ID ${durableTaskId} already belongs to a different dispatch`);
-  store.recordDispatch(durableTaskId, streamId, selectedTransport, task, payload);
+  store.recordDispatch(durableTaskId, streamId, selectedTransport, body, payload);
   store.enqueueResult(durableTaskId, streamId, selectedTransport, payload);
   await flushOutboxForDispatch({ ctx, signal, store, config });
   const outbox = store.outboxForTask(durableTaskId);
@@ -740,21 +772,16 @@ function loadConfig(cwd: string): Config {
   return JSON.parse(readFileSync(path, "utf8")) as Config;
 }
 
+function renderAttachmentReview(review: { plans: any[]; errors: Array<{ streamId: string; error: string }> }) {
+  const sections = review.plans.map((plan: any) => `${plan.streamId}:\n${plan.actions.map((item: any) => `- ${item.action}: ${item.path}`).join("\n")}`);
+  if (review.errors.length) sections.push(`Errors:\n${review.errors.map(({ streamId, error }) => `- ${streamId}: ${error}`).join("\n")}`);
+  return sections.join("\n\n");
+}
+
 function textContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
-}
-
-function findTaskRawMessage(ctx: any, taskId: string): string {
-  for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-    const message = entry.type === "message" ? entry.message : undefined;
-    if (message?.role !== "user") continue;
-    const text = textContent(message.content);
-    const parsed = parseEnvelope(text);
-    if (parsed?.fields.type === "task" && parsed.fields.task_id === taskId) return text;
-  }
-  return "";
 }
 
 function transportFor(config: Config, agent: string): "telegram" | "herdr" | undefined {

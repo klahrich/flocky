@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { ensurePayloadWithinCompactLimit } from "./message.mjs";
 
 export async function sendViaHerdr({ cwd, route, text, signal }) {
+  const payload = ensurePayloadWithinCompactLimit(text, "herdr");
   if (process.env.HERDR_ENV !== "1") throw new Error("Herdr transport is unavailable outside a Herdr-managed pane");
   if (!route?.paneId || !route?.expectedCwd) throw new Error("Herdr route is incomplete");
   const inspected = await herdr(["pane", "get", route.paneId], signal);
@@ -10,7 +12,7 @@ export async function sendViaHerdr({ cwd, route, text, signal }) {
   if (resolve(pane.cwd).toLowerCase() !== resolve(cwd, route.expectedCwd).toLowerCase() && resolve(pane.cwd).toLowerCase() !== resolve(route.expectedCwd).toLowerCase()) {
     throw new Error(`Herdr route ${route.paneId} no longer matches its expected repository`);
   }
-  await herdr(["pane", "run", route.paneId, text], signal);
+  await herdr(["pane", "run", route.paneId, payload], signal);
   return { paneId: route.paneId };
 }
 

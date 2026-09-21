@@ -158,6 +158,10 @@ export class FlockyStore {
       .run(Date.now(), taskId);
   }
 
+  task(taskId) {
+    return this.db.prepare("SELECT * FROM tasks WHERE task_id = ?").get(taskId);
+  }
+
   dispatchForTask(taskId) {
     return this.db.prepare("SELECT * FROM dispatches WHERE task_id = ?").get(taskId);
   }

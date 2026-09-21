@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sendAsTelegramUser } from "../.pi/extensions/flocky-agent-protocol/transport.mjs";
 import { sendViaHerdr } from "../.pi/extensions/flocky-agent-protocol/herdr.mjs";
+import { INLINE_PAYLOAD_CHAR_LIMIT } from "../.pi/extensions/flocky-agent-protocol/message.mjs";
 
 test("Telegram adapter invokes the configured sender with target and payload", async () => {
   const dir = mkdtempSync(join(tmpdir(), "flocky-transport-"));
@@ -20,6 +21,18 @@ test("Telegram adapter invokes the configured sender with target and payload", a
     assert.match(result.stdout, /@stream_bot/);
     assert.match(result.stdout, /signed payload/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("Telegram adapter rejects oversized compact payloads before spawning the sender", () => {
+  assert.throws(
+    () => sendAsTelegramUser({
+      cwd: process.cwd(),
+      config: { transport: { command: process.execPath, commandArgs: ["-e", "process.exit(0)"], sendAsUserScript: "ignored.py" } },
+      target: "@stream_bot",
+      text: "x".repeat(INLINE_PAYLOAD_CHAR_LIMIT + 1),
+    }),
+    /telegram payload exceeded the compact inline limit/,
+  );
 });
 
 test("Herdr adapter validates a Pi pane then sends the payload", async () => {

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { applyAttachment, planAttachment } from "./attachment.mjs";
+import { applyAttachment, applyAttachments, planAttachment, planAttachments } from "./attachment.mjs";
 
 type Agent = { path?: string; description?: string; routes?: { herdr?: any; telegram?: any } };
 type Config = { project: { id: string }; agents: Record<string, Agent> };
@@ -31,6 +31,22 @@ export function registerFlockyCommands(pi: ExtensionAPI) {
       if (!await ctx.ui.confirm(`Attach ${id} to Flocky?`, `${preview}\n\nOnly Flocky-owned files will be created or updated.`)) return;
       applyAttachment({ ownerCwd: ctx.cwd, config, streamId: id });
       ctx.ui.notify(`Attached ${id} to Flocky. Start/reload Pi in that stream repository to activate it.`, "info");
+    },
+  });
+
+  pi.registerCommand("attach-streams", {
+    description: "Preview and attach Flocky-managed files for multiple stream repositories at once",
+    handler: async (args, ctx) => {
+      requireTui(ctx, "/attach-streams");
+      const ids = args.trim() ? args.trim().split(/\s+/).filter(Boolean) : [];
+      const config = load(ctx.cwd);
+      const review = planAttachments({ ownerCwd: ctx.cwd, config, streamIds: ids });
+      const preview = renderAttachmentReview(review);
+      if (review.errors.length) throw new Error(`Attachment preview found issues:\n${preview}`);
+      const label = ids.length ? ids.join(", ") : `${review.plans.length} configured streams`;
+      if (!await ctx.ui.confirm(`Attach ${label} to Flocky?`, `${preview}\n\nOnly Flocky-owned files will be created or updated.`)) return;
+      const applied = applyAttachments({ ownerCwd: ctx.cwd, config, streamIds: ids });
+      ctx.ui.notify(`Attached ${applied.length} stream(s) to Flocky. Start/reload Pi in those repositories to activate the update.`, "info");
     },
   });
 
@@ -158,6 +174,12 @@ async function removeRoute(ctx: any, args: string) {
   delete stream.routes[transport];
   save(ctx.cwd, config);
   ctx.ui.notify(`Removed ${transport} route for ${id}`, "info");
+}
+
+function renderAttachmentReview(review: { plans: any[]; errors: Array<{ streamId: string; error: string }> }) {
+  const sections = review.plans.map((plan) => `${plan.streamId}:\n${plan.actions.map((item: any) => `• ${item.action}: ${item.path}`).join("\n")}`);
+  if (review.errors.length) sections.push(`Errors:\n${review.errors.map(({ streamId, error }) => `• ${streamId}: ${error}`).join("\n")}`);
+  return sections.join("\n\n");
 }
 
 function load(cwd: string): Config { const path = join(cwd, "flocky.config.json"); if (!existsSync(path)) throw new Error("Flocky is not onboarded yet"); return JSON.parse(readFileSync(path, "utf8")); }

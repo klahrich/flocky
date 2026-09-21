@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
+import { ensurePayloadWithinCompactLimit } from "./message.mjs";
 
 export function sendAsTelegramUser({ cwd, config, target, text, signal }) {
   const script = resolve(cwd, config.transport?.sendAsUserScript ?? ".agents/skills/telegram/scripts/send_as_user.py");
   const command = config.transport?.command ?? "uv";
   const commandArgs = config.transport?.commandArgs ?? ["run"];
-  const args = [...commandArgs, script, "--to", target, "--text", text];
+  const payload = ensurePayloadWithinCompactLimit(text, "telegram");
+  const args = [...commandArgs, script, "--to", target, "--text", payload];
 
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, { cwd, env: process.env, windowsHide: true });

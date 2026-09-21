@@ -4,6 +4,34 @@ import { dirname, join, resolve } from "node:path";
 const MANAGED_START = "<!-- flocky:stream-instructions:start -->";
 const MANAGED_END = "<!-- flocky:stream-instructions:end -->";
 
+export function attachmentStreamIds(config, streamIds = []) {
+  const ownerId = config.project?.id;
+  const configured = Object.keys(config.agents ?? {}).filter((id) => id !== ownerId);
+  const selected = streamIds.length ? [...new Set(streamIds)] : configured;
+  if (!selected.length) throw new Error("No stream repositories are configured for attachment");
+  return selected;
+}
+
+export function planAttachments({ ownerCwd, config, streamIds = [] }) {
+  const selected = attachmentStreamIds(config, streamIds);
+  const plans = [];
+  const errors = [];
+  for (const streamId of selected) {
+    try {
+      plans.push(planAttachment({ ownerCwd, config, streamId }));
+    } catch (error) {
+      errors.push({ streamId, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { streamIds: selected, plans, errors };
+}
+
+export function applyAttachments({ ownerCwd, config, streamIds = [] }) {
+  const review = planAttachments({ ownerCwd, config, streamIds });
+  if (review.errors.length) throw new Error(`Cannot attach streams:\n${review.errors.map(({ streamId, error }) => `- ${streamId}: ${error}`).join("\n")}`);
+  return review.plans.map((plan) => applyAttachment({ ownerCwd, config, streamId: plan.streamId }));
+}
+
 export function planAttachment({ ownerCwd, config, streamId }) {
   const stream = config.agents?.[streamId];
   const ownerId = config.project?.id;
@@ -28,7 +56,7 @@ export function planAttachment({ ownerCwd, config, streamId }) {
     { path: ".pi/flocky/attachment.json", action: "record attachment metadata" },
   ];
   if (telegramNeeded) actions.splice(1, 0, { path: ".agents/skills/telegram", action: existsSync(join(streamCwd, ".agents", "skills", "telegram")) ? "replace Flocky Telegram skill" : "install Flocky Telegram skill" });
-  return { streamCwd, extensionSource, telegramSource, telegramNeeded, actions };
+  return { streamId, streamCwd, extensionSource, telegramSource, telegramNeeded, actions };
 }
 
 export function applyAttachment({ ownerCwd, config, streamId }) {

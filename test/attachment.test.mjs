@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyAttachment, planAttachment } from "../.pi/extensions/flocky-agent-protocol/attachment.mjs";
+import { applyAttachment, applyAttachments, planAttachment, planAttachments } from "../.pi/extensions/flocky-agent-protocol/attachment.mjs";
 
 function fixture() {
   const owner = mkdtempSync(join(tmpdir(), "flocky-attach-"));
@@ -49,6 +49,32 @@ test("attachment rejects conflicting stream environment values", () => {
   try {
     writeFileSync(join(stream, ".env"), "FLOCKY_PROTOCOL_SECRET=different\n", "utf8");
     assert.throws(() => planAttachment({ ownerCwd: owner, config, streamId: "stream" }), /different FLOCKY_PROTOCOL_SECRET/);
+  } finally { rmSync(owner, { recursive: true, force: true }); }
+});
+
+test("bulk attachment previews and applies all configured streams", () => {
+  const { owner, stream, config } = fixture();
+  const streamTwo = join(owner, "stream-two");
+  try {
+    mkdirSync(join(streamTwo, ".git"), { recursive: true });
+    writeFileSync(join(streamTwo, "AGENTS.md"), "# Stream two\n", "utf8");
+    config.agents.streamTwo = { path: "./stream-two", description: "Second stream", routes: {} };
+    const review = planAttachments({ ownerCwd: owner, config });
+    assert.equal(review.errors.length, 0);
+    assert.deepEqual(review.plans.map((plan) => plan.streamId).sort(), ["stream", "streamTwo"].sort());
+    const applied = applyAttachments({ ownerCwd: owner, config });
+    assert.deepEqual(applied.map((plan) => plan.streamId).sort(), ["stream", "streamTwo"].sort());
+    assert.equal(existsSync(join(stream, ".pi", "extensions", "flocky-agent-protocol", "index.ts")), true);
+    assert.equal(existsSync(join(streamTwo, ".pi", "extensions", "flocky-agent-protocol", "index.ts")), true);
+  } finally { rmSync(owner, { recursive: true, force: true }); }
+});
+
+test("bulk attachment review reports per-stream errors without dropping valid plans", () => {
+  const { owner, config } = fixture();
+  try {
+    const review = planAttachments({ ownerCwd: owner, config, streamIds: ["stream", "missing"] });
+    assert.deepEqual(review.plans.map((plan) => plan.streamId), ["stream"]);
+    assert.deepEqual(review.errors, [{ streamId: "missing", error: "Unknown stream: missing" }]);
   } finally { rmSync(owner, { recursive: true, force: true }); }
 });
 

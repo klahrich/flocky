@@ -7,6 +7,7 @@ import { buildEnvelope } from "../.pi/extensions/flocky-agent-protocol/protocol.
 import { loadProjectEnv } from "../.pi/extensions/flocky-agent-protocol/config.mjs";
 import { sendAsTelegramUser } from "../.pi/extensions/flocky-agent-protocol/transport.mjs";
 import { sendViaHerdr } from "../.pi/extensions/flocky-agent-protocol/herdr.mjs";
+import { ensureInlineTaskBody } from "../.pi/extensions/flocky-agent-protocol/message.mjs";
 import { valueArg } from "./cli-args.mjs";
 
 const args = process.argv.slice(2);
@@ -28,12 +29,13 @@ try {
   const recipient = config.agents?.[job.recipient];
   if (!recipient) throw new Error(`Schedule recipient ${job.recipient} is no longer configured`);
   const route = job.transport === "telegram" ? recipient.routes?.telegram?.target ?? recipient.telegramTarget : recipient.routes?.herdr;
+  if (job.transport !== "telegram") throw new Error("Scheduled jobs currently support telegram only; keep detail in repo artifacts and use a compact inline task.");
   if (!route) throw new Error(`No ${job.transport} route is configured for ${job.recipient}`);
   const occurrence = valueArg(args, "--occurrence") ?? `${job.id}:${occurrenceHour(new Date(), job.timezone)}`;
   const taskId = randomUUID();
   if (!store.claimScheduledRun(occurrence, job.id, taskId)) { console.log(`Skipped duplicate occurrence ${occurrence}`); process.exitCode = 0; }
   else {
-    const payload = buildEnvelope({ type: "task", task_id: taskId, from: owner, to: job.recipient, reply_to: owner, answer_back: job.answerBack ? "yes" : "no" }, job.task, secret);
+    const payload = buildEnvelope({ type: "task", task_id: taskId, from: owner, to: job.recipient, reply_to: owner, answer_back: job.answerBack ? "yes" : "no" }, ensureInlineTaskBody(job.task), secret);
     store.recordDispatch(taskId, job.recipient, job.transport, job.task, payload);
     store.enqueueResult(taskId, job.recipient, job.transport, payload);
     const outbox = store.outboxForTask(taskId);
