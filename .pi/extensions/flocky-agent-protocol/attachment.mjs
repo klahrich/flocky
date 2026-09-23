@@ -12,13 +12,13 @@ export function attachmentStreamIds(config, streamIds = []) {
   return selected;
 }
 
-export function planAttachments({ ownerCwd, config, streamIds = [] }) {
+export function planAttachments({ ownerCwd, config, streamIds = [], replaceConflictingEnvironment = false }) {
   const selected = attachmentStreamIds(config, streamIds);
   const plans = [];
   const errors = [];
   for (const streamId of selected) {
     try {
-      plans.push(planAttachment({ ownerCwd, config, streamId }));
+      plans.push(planAttachment({ ownerCwd, config, streamId, replaceConflictingEnvironment }));
     } catch (error) {
       errors.push({ streamId, error: error instanceof Error ? error.message : String(error) });
     }
@@ -26,13 +26,13 @@ export function planAttachments({ ownerCwd, config, streamIds = [] }) {
   return { streamIds: selected, plans, errors };
 }
 
-export function applyAttachments({ ownerCwd, config, streamIds = [] }) {
-  const review = planAttachments({ ownerCwd, config, streamIds });
+export function applyAttachments({ ownerCwd, config, streamIds = [], replaceConflictingEnvironment = false }) {
+  const review = planAttachments({ ownerCwd, config, streamIds, replaceConflictingEnvironment });
   if (review.errors.length) throw new Error(`Cannot attach streams:\n${review.errors.map(({ streamId, error }) => `- ${streamId}: ${error}`).join("\n")}`);
-  return review.plans.map((plan) => applyAttachment({ ownerCwd, config, streamId: plan.streamId }));
+  return review.plans.map((plan) => applyAttachment({ ownerCwd, config, streamId: plan.streamId, replaceConflictingEnvironment }));
 }
 
-export function planAttachment({ ownerCwd, config, streamId }) {
+export function planAttachment({ ownerCwd, config, streamId, replaceConflictingEnvironment = false }) {
   const stream = config.agents?.[streamId];
   const ownerId = config.project?.id;
   if (!stream || streamId === ownerId) throw new Error(`Unknown stream: ${streamId}`);
@@ -47,7 +47,7 @@ export function planAttachment({ ownerCwd, config, streamId }) {
   const telegramNeeded = config.transport?.default === "telegram" || config.transport?.fallbackOrder?.includes("telegram");
   const telegramSource = join(ownerCwd, ".agents", "skills", "telegram");
   if (telegramNeeded && !existsSync(telegramSource)) throw new Error(`Telegram transport is configured but the skill is missing: ${telegramSource}`);
-  const environment = planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded);
+  const environment = planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded, replaceConflictingEnvironment);
   const actions = [
     { path: ".env", action: environment.action },
     { path: ".pi/extensions/flocky-agent-protocol", action: existsSync(join(streamCwd, ".pi", "extensions", "flocky-agent-protocol")) ? "replace Flocky extension" : "install Flocky extension" },
@@ -59,8 +59,8 @@ export function planAttachment({ ownerCwd, config, streamId }) {
   return { streamId, streamCwd, extensionSource, telegramSource, telegramNeeded, actions };
 }
 
-export function applyAttachment({ ownerCwd, config, streamId }) {
-  const plan = planAttachment({ ownerCwd, config, streamId });
+export function applyAttachment({ ownerCwd, config, streamId, replaceConflictingEnvironment = false }) {
+  const plan = planAttachment({ ownerCwd, config, streamId, replaceConflictingEnvironment });
   const destinationExtension = join(plan.streamCwd, ".pi", "extensions", "flocky-agent-protocol");
   mkdirSync(dirname(destinationExtension), { recursive: true });
   cpSync(plan.extensionSource, destinationExtension, { recursive: true, force: true });
@@ -78,7 +78,7 @@ export function applyAttachment({ ownerCwd, config, streamId }) {
     compaction: config.compaction,
     onboarding: { version: 1, attachedAt: new Date().toISOString(), attachedBy: config.project.id },
   };
-  syncEnvironment(ownerCwd, plan.streamCwd, plan.telegramNeeded);
+  syncEnvironment(ownerCwd, plan.streamCwd, plan.telegramNeeded, replaceConflictingEnvironment);
   writeAtomic(join(plan.streamCwd, "flocky.config.json"), `${JSON.stringify(streamConfig, null, 2)}\n`);
   updateAgentsFile(plan.streamCwd, readFileSync(join(ownerCwd, "templates", "stream-AGENTS.md"), "utf8"));
   writeAtomic(join(plan.streamCwd, ".pi", "flocky", "attachment.json"), `${JSON.stringify({ schemaVersion: 1, streamId, attachedAt: new Date().toISOString(), ownerProject: config.project.id }, null, 2)}\n`);
@@ -89,27 +89,36 @@ function requiredEnvironmentKeys(telegramNeeded) {
   return telegramNeeded ? ["FLOCKY_PROTOCOL_SECRET", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"] : ["FLOCKY_PROTOCOL_SECRET"];
 }
 
-function planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded) {
+function planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded, replaceConflictingEnvironment = false) {
   const required = requiredEnvironmentKeys(telegramNeeded);
   const source = readEnv(join(ownerCwd, ".env"));
   const missing = required.filter((key) => !source[key]);
   if (missing.length) throw new Error(`Owner .env is missing required Flocky transport values: ${missing.join(", ")}`);
   const targetPath = join(streamCwd, ".env");
   const target = readEnv(targetPath);
-  for (const key of required) if (target[key] && target[key] !== source[key]) throw new Error(`Stream .env has a different ${key}; resolve it manually before attachment`);
+  const conflicting = required.filter((key) => target[key] && target[key] !== source[key]);
+  if (conflicting.length && !replaceConflictingEnvironment) throw new Error(`Stream .env has a different ${conflicting.join(", ")}; resolve it manually before attachment`);
   const additions = required.filter((key) => !target[key]);
+  if (conflicting.length) return { action: `replace conflicting local Flocky values (${conflicting.join(", ")})${additions.length ? ` and add (${additions.join(", ")})` : ""}` };
   return { action: additions.length ? (existsSync(targetPath) ? `append required local Flocky values (${additions.join(", ")})` : "create required local Flocky .env values") : "keep existing required local Flocky .env values" };
 }
 
-function syncEnvironment(ownerCwd, streamCwd, telegramNeeded) {
-  const plan = planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded);
+function syncEnvironment(ownerCwd, streamCwd, telegramNeeded, replaceConflictingEnvironment = false) {
+  const plan = planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded, replaceConflictingEnvironment);
   if (plan.action.startsWith("keep")) return;
   const source = readEnv(join(ownerCwd, ".env"));
   const targetPath = join(streamCwd, ".env");
-  const existing = existsSync(targetPath) ? readFileSync(targetPath, "utf8").trimEnd() : "";
+  const required = requiredEnvironmentKeys(telegramNeeded);
   const target = readEnv(targetPath);
-  const additions = requiredEnvironmentKeys(telegramNeeded).filter((key) => !target[key]).map((key) => `${key}=${source[key]}`);
-  writeAtomic(targetPath, `${existing}${existing ? "\n" : ""}# Flocky local transport configuration\n${additions.join("\n")}\n`);
+  let existing = existsSync(targetPath) ? readFileSync(targetPath, "utf8").trimEnd() : "";
+  for (const key of required) {
+    if (target[key] && target[key] !== source[key]) {
+      const expression = new RegExp(`^\\s*${key}\\s*=.*$`, "m");
+      existing = existing.replace(expression, `${key}=${source[key]}`);
+    }
+  }
+  const additions = required.filter((key) => !target[key]).map((key) => `${key}=${source[key]}`);
+  writeAtomic(targetPath, additions.length ? `${existing}${existing ? "\n" : ""}# Flocky local transport configuration\n${additions.join("\n")}\n` : `${existing}\n`);
 }
 
 function readEnv(path) {

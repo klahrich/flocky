@@ -63,6 +63,19 @@ test("attachment rejects conflicting stream environment values", () => {
   } finally { rmSync(owner, { recursive: true, force: true }); }
 });
 
+test("attachment replaces a conflicting protocol secret only when explicitly requested", () => {
+  const { owner, stream, config } = fixture();
+  try {
+    writeFileSync(join(stream, ".env"), "FLOCKY_PROTOCOL_SECRET=different\nOTHER=value\n", "utf8");
+    const plan = planAttachment({ ownerCwd: owner, config, streamId: "stream", replaceConflictingEnvironment: true });
+    assert.match(plan.actions[0].action, /replace conflicting local Flocky values/);
+    applyAttachment({ ownerCwd: owner, config, streamId: "stream", replaceConflictingEnvironment: true });
+    const environment = readFileSync(join(stream, ".env"), "utf8");
+    assert.match(environment, /FLOCKY_PROTOCOL_SECRET=test-secret/);
+    assert.match(environment, /OTHER=value/);
+  } finally { rmSync(owner, { recursive: true, force: true }); }
+});
+
 test("bulk attachment previews and applies all configured streams", () => {
   const { owner, stream, config } = fixture();
   const streamTwo = join(owner, "stream-two");

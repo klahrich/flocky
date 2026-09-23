@@ -176,7 +176,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     label: "Flocky Dispatch",
     description: "Dispatch a signed durable task from the project owner to one configured stream agent.",
     promptSnippet: "Dispatch a task to a configured Flocky stream agent",
-    promptGuidelines: ["Use flocky_dispatch to delegate repository work to a configured Flocky stream; do not manually compose Flocky envelopes.", "Keep inline task text compact. Put longer specifications in repo artifacts such as files, docs, or commit history, then dispatch a concise task that references them."],
+    promptGuidelines: ["Use flocky_dispatch to delegate repository work to a configured Flocky stream; do not manually compose Flocky envelopes.", "For a simple quoted user-to-stream message, pass exactly the quoted message as task text; do not ask the stream to resend it.", "Keep inline task text compact. Put longer specifications in repo artifacts such as files, docs, or commit history, then dispatch a concise task that references them."],
     parameters: Type.Object({
       stream: Type.String({ description: "Configured stream ID" }),
       task: Type.String({ description: "Complete task instructions and acceptance criteria" }),
@@ -423,13 +423,13 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     if (!parsed) return;
     if (!verifyEnvelope(parsed, secret)) {
       ctx.ui.notify("Ignored Flocky envelope with an invalid signature", "warning");
-      return;
+      return { action: "handled" };
     }
     const { fields, body } = parsed;
     const trusted = classifyInboundEnvelope({ parsed, config, store });
     if (!trusted.trusted) {
       ctx.ui.notify(`Ignored Flocky envelope from untrusted sender ${fields.from}: ${trusted.reason}`, "warning");
-      return;
+      return { action: "handled" };
     }
     if (fields.type === "compact" && fields.from !== agentId) {
       ctx.compact({ customInstructions: "Compact at this signed request; preserve active task state and recent implementation details." });
@@ -459,7 +459,7 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
     if (!store) return;
     const ownerInstructions = config && agentId === config.project?.id ? configuredStreamInstructions(config) : "";
     const parsed = parseEnvelope(event.prompt);
-    if (parsed?.fields.type === "task") {
+    if (parsed?.fields.type === "task" && secret && verifyEnvelope(parsed, secret) && config && classifyInboundEnvelope({ parsed, config, store }).trusted) {
       activeTaskId = parsed.fields.task_id;
       latestAnswer = "";
       return { systemPrompt: `${event.systemPrompt}${ownerInstructions}\n\nThis is an active delegated Flocky task. Before ending, call flocky_complete exactly once with the validated terminal outcome. Keep any answer-back compact and put long detail in repo artifacts such as files, docs, or commit history. A successful prose answer without flocky_complete will be reported as unverified partial.` };
@@ -799,7 +799,7 @@ function configuredStreamInstructions(config: Config): string {
   const streams = Object.entries(config.agents ?? {}).filter(([id]) => id !== ownerId);
   if (!streams.length) return "";
   const list = streams.map(([id, stream]) => `- ${id}${stream.description ? `: ${stream.description}` : ""}`).join("\n");
-  return `\n\nConfigured Flocky streams:\n${list}\n\nWhen the user addresses one of these stream IDs (for example, “send hi to stream-a”), use flocky_dispatch for a direct durable task or flocky_delegate for repository work. Do not use the Telegram skill or manually compose an envelope for a configured stream; Flocky chooses its configured transport.`;
+  return `\n\nConfigured Flocky streams:\n${list}\n\nWhen the user addresses one of these stream IDs (for example, “send hi to stream-a”), use flocky_dispatch for a direct durable task or flocky_delegate for repository work. For a simple quoted message, dispatch only the quoted text (task: hi), not an instruction for the stream to resend it. Do not use the Telegram skill or manually compose an envelope for a configured stream; Flocky chooses its configured transport.`;
 }
 
 function routeFor(config: Config, agent: string, transport: string | undefined): any {

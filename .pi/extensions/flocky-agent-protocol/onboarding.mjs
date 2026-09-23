@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { applyAttachments, planAttachments } from "./attachment.mjs";
@@ -5,6 +6,7 @@ import { applyAttachments, planAttachments } from "./attachment.mjs";
 export async function ensureOnboarded(pi, ctx) {
   const configPath = join(ctx.cwd, "flocky.config.json");
   if (existsSync(configPath)) return false;
+  if (!await ensureProtocolSecret(ctx)) return false;
   if (ctx.mode !== "tui") {
     ctx.ui.notify("Flocky needs onboarding. Start Pi in TUI mode to configure this project.", "warning");
     return false;
@@ -60,10 +62,40 @@ export async function ensureOnboarded(pi, ctx) {
   return true;
 }
 
+export async function ensureProtocolSecret(ctx) {
+  const secretEnv = "FLOCKY_PROTOCOL_SECRET";
+  if (usableSecret(process.env[secretEnv])) return true;
+  if (ctx.mode !== "tui") {
+    ctx.ui.notify(`${secretEnv} is required. Create .env from .env.example and set a long random secret before onboarding.`, "warning");
+    return false;
+  }
+  if (!await ctx.ui.confirm("Create Flocky protocol secret?", "Flocky needs a local FLOCKY_PROTOCOL_SECRET to authenticate messages between its agents. Generate one and save it to this project's .env file?")) return false;
+  const secret = randomBytes(32).toString("hex");
+  const path = join(ctx.cwd, ".env");
+  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const expression = new RegExp(`^\\s*${secretEnv}\\s*=.*$`, "m");
+  const line = `${secretEnv}=${secret}`;
+  writeAtomic(path, expression.test(existing) ? existing.replace(expression, line) : `${existing.trimEnd()}${existing.trim() ? "\n" : ""}${line}\n`);
+  process.env[secretEnv] = secret;
+  ctx.ui.notify("Created a local Flocky protocol secret in .env.", "info");
+  return true;
+}
+
+function usableSecret(value) { return typeof value === "string" && value.trim().length > 0 && !value.trim().startsWith("replace-with-"); }
+
 async function attachInitialStreams(ctx, config) {
   const streamIds = Object.keys(config.agents).filter((id) => id !== config.project.id);
   if (!streamIds.length) return true;
-  const review = planAttachments({ ownerCwd: ctx.cwd, config, streamIds });
+  let replaceConflictingEnvironment = false;
+  let review = planAttachments({ ownerCwd: ctx.cwd, config, streamIds });
+  const secretConflicts = review.errors.filter(({ error }) => /different FLOCKY_PROTOCOL_SECRET/.test(error));
+  if (secretConflicts.length) {
+    const affected = secretConflicts.map(({ streamId }) => streamId).join(", ");
+    if (await ctx.ui.confirm("Replace conflicting stream protocol secrets?", `${affected} has a different FLOCKY_PROTOCOL_SECRET. Flocky streams must share the owner's secret to authenticate signed tasks. Replace the conflicting stream value(s) with this project's generated secret?`)) {
+      replaceConflictingEnvironment = true;
+      review = planAttachments({ ownerCwd: ctx.cwd, config, streamIds, replaceConflictingEnvironment });
+    }
+  }
   const preview = [
     ...review.plans.map((plan) => `${plan.streamId}:\n${plan.actions.map((item) => `• ${item.action}: ${item.path}`).join("\n")}`),
     ...(review.errors.length ? [`Problems:\n${review.errors.map(({ streamId, error }) => `• ${streamId}: ${error}`).join("\n")}`] : []),
@@ -76,7 +108,7 @@ async function attachInitialStreams(ctx, config) {
     ctx.ui.notify("Streams were registered but not attached. Use /attach-stream or /attach-streams later.", "warning");
     return false;
   }
-  const attached = applyAttachments({ ownerCwd: ctx.cwd, config, streamIds });
+  const attached = applyAttachments({ ownerCwd: ctx.cwd, config, streamIds, replaceConflictingEnvironment });
   ctx.ui.notify(`Attached ${attached.length} configured stream(s). Restart Pi in already-running stream repositories to activate Flocky.`, "info");
   return true;
 }

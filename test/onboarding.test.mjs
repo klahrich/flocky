@@ -3,7 +3,27 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureOnboarded, parseHerdrResponse } from "../.pi/extensions/flocky-agent-protocol/onboarding.mjs";
+import { ensureOnboarded, ensureProtocolSecret, parseHerdrResponse } from "../.pi/extensions/flocky-agent-protocol/onboarding.mjs";
+
+process.env.FLOCKY_PROTOCOL_SECRET ??= "test-protocol-secret";
+
+test("onboarding offers to create a missing protocol secret", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "flocky-secret-"));
+  const previous = process.env.FLOCKY_PROTOCOL_SECRET;
+  const notifications = [];
+  try {
+    delete process.env.FLOCKY_PROTOCOL_SECRET;
+    const ctx = { cwd: directory, mode: "tui", ui: { confirm: async () => true, notify: (...args) => notifications.push(args) } };
+    assert.equal(await ensureProtocolSecret(ctx), true);
+    const environment = readFileSync(join(directory, ".env"), "utf8");
+    assert.match(environment, /^FLOCKY_PROTOCOL_SECRET=[a-f0-9]{64}$/m);
+    assert.match(process.env.FLOCKY_PROTOCOL_SECRET, /^[a-f0-9]{64}$/);
+    assert.equal(notifications.at(-1)[0], "Created a local Flocky protocol secret in .env.");
+  } finally {
+    if (previous === undefined) delete process.env.FLOCKY_PROTOCOL_SECRET; else process.env.FLOCKY_PROTOCOL_SECRET = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("Herdr's successful empty pane-run response is accepted", () => {
   assert.deepEqual(parseHerdrResponse(""), {});
