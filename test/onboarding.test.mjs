@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureOnboarded } from "../.pi/extensions/flocky-agent-protocol/onboarding.mjs";
+import { ensureOnboarded, parseHerdrResponse } from "../.pi/extensions/flocky-agent-protocol/onboarding.mjs";
+
+test("Herdr's successful empty pane-run response is accepted", () => {
+  assert.deepEqual(parseHerdrResponse(""), {});
+  assert.deepEqual(parseHerdrResponse("  \r\n"), {});
+  assert.deepEqual(parseHerdrResponse('{"result":{"ok":true}}'), { result: { ok: true } });
+});
 
 test("onboarding completes an owner-only project so streams can be added later", async () => {
   const directory = mkdtempSync(join(tmpdir(), "flocky-onboarding-"));
@@ -24,7 +30,7 @@ test("onboarding completes an owner-only project so streams can be added later",
     // The owner instruction template is an onboarding requirement, not part of this behavior.
     const templates = join(directory, "templates");
     mkdirSync(templates);
-    writeFileSync(join(templates, "project-owner-AGENTS.md"), "Owner instructions", "utf8");
+    writeFileSync(join(templates, "project-owner-AGENTS.md"), "When a user asks to contact a configured stream by ID", "utf8");
 
     assert.equal(await ensureOnboarded({}, ctx), true);
     const configPath = join(directory, "flocky.config.json");
@@ -33,6 +39,7 @@ test("onboarding completes an owner-only project so streams can be added later",
     assert.deepEqual(Object.keys(config.agents), ["owner"]);
     assert.equal(config.agents.owner.routes.telegram.target, "@owner_bot");
     assert.equal(existsSync(join(directory, "projects", "owner", "PROJECT.md")), true);
+    assert.match(readFileSync(join(directory, "AGENTS.md"), "utf8"), /When a user asks to contact a configured stream by ID/);
     assert.equal(notifications.at(-1)[0], "Flocky onboarding complete. Protocol routing is now active.");
   } finally {
     rmSync(directory, { recursive: true, force: true });

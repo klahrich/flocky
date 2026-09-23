@@ -47,7 +47,7 @@ export function planAttachment({ ownerCwd, config, streamId }) {
   const telegramNeeded = config.transport?.default === "telegram" || config.transport?.fallbackOrder?.includes("telegram");
   const telegramSource = join(ownerCwd, ".agents", "skills", "telegram");
   if (telegramNeeded && !existsSync(telegramSource)) throw new Error(`Telegram transport is configured but the skill is missing: ${telegramSource}`);
-  const environment = planEnvironmentSync(ownerCwd, streamCwd);
+  const environment = planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded);
   const actions = [
     { path: ".env", action: environment.action },
     { path: ".pi/extensions/flocky-agent-protocol", action: existsSync(join(streamCwd, ".pi", "extensions", "flocky-agent-protocol")) ? "replace Flocky extension" : "install Flocky extension" },
@@ -78,34 +78,37 @@ export function applyAttachment({ ownerCwd, config, streamId }) {
     compaction: config.compaction,
     onboarding: { version: 1, attachedAt: new Date().toISOString(), attachedBy: config.project.id },
   };
-  syncEnvironment(ownerCwd, plan.streamCwd);
+  syncEnvironment(ownerCwd, plan.streamCwd, plan.telegramNeeded);
   writeAtomic(join(plan.streamCwd, "flocky.config.json"), `${JSON.stringify(streamConfig, null, 2)}\n`);
   updateAgentsFile(plan.streamCwd, readFileSync(join(ownerCwd, "templates", "stream-AGENTS.md"), "utf8"));
   writeAtomic(join(plan.streamCwd, ".pi", "flocky", "attachment.json"), `${JSON.stringify({ schemaVersion: 1, streamId, attachedAt: new Date().toISOString(), ownerProject: config.project.id }, null, 2)}\n`);
   return plan;
 }
 
-const REQUIRED_ENV = ["FLOCKY_PROTOCOL_SECRET", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"];
+function requiredEnvironmentKeys(telegramNeeded) {
+  return telegramNeeded ? ["FLOCKY_PROTOCOL_SECRET", "TELEGRAM_API_ID", "TELEGRAM_API_HASH"] : ["FLOCKY_PROTOCOL_SECRET"];
+}
 
-function planEnvironmentSync(ownerCwd, streamCwd) {
+function planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded) {
+  const required = requiredEnvironmentKeys(telegramNeeded);
   const source = readEnv(join(ownerCwd, ".env"));
-  const missing = REQUIRED_ENV.filter((key) => !source[key]);
+  const missing = required.filter((key) => !source[key]);
   if (missing.length) throw new Error(`Owner .env is missing required Flocky transport values: ${missing.join(", ")}`);
   const targetPath = join(streamCwd, ".env");
   const target = readEnv(targetPath);
-  for (const key of REQUIRED_ENV) if (target[key] && target[key] !== source[key]) throw new Error(`Stream .env has a different ${key}; resolve it manually before attachment`);
-  const additions = REQUIRED_ENV.filter((key) => !target[key]);
+  for (const key of required) if (target[key] && target[key] !== source[key]) throw new Error(`Stream .env has a different ${key}; resolve it manually before attachment`);
+  const additions = required.filter((key) => !target[key]);
   return { action: additions.length ? (existsSync(targetPath) ? `append required local Flocky values (${additions.join(", ")})` : "create required local Flocky .env values") : "keep existing required local Flocky .env values" };
 }
 
-function syncEnvironment(ownerCwd, streamCwd) {
-  const plan = planEnvironmentSync(ownerCwd, streamCwd);
+function syncEnvironment(ownerCwd, streamCwd, telegramNeeded) {
+  const plan = planEnvironmentSync(ownerCwd, streamCwd, telegramNeeded);
   if (plan.action.startsWith("keep")) return;
   const source = readEnv(join(ownerCwd, ".env"));
   const targetPath = join(streamCwd, ".env");
   const existing = existsSync(targetPath) ? readFileSync(targetPath, "utf8").trimEnd() : "";
   const target = readEnv(targetPath);
-  const additions = REQUIRED_ENV.filter((key) => !target[key]).map((key) => `${key}=${source[key]}`);
+  const additions = requiredEnvironmentKeys(telegramNeeded).filter((key) => !target[key]).map((key) => `${key}=${source[key]}`);
   writeAtomic(targetPath, `${existing}${existing ? "\n" : ""}# Flocky local transport configuration\n${additions.join("\n")}\n`);
 }
 

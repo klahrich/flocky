@@ -23,7 +23,7 @@ import { cleanupTransientHerdrRun, provisionTransientHerdrRun, shouldCleanupTran
 type Config = {
   project?: { id?: string };
   runtime?: { agentId?: string };
-  agents?: Record<string, { telegramTarget?: string; path?: string; routes?: { telegram?: { target?: string }; herdr?: { paneId?: string; workspaceId?: string; expectedCwd?: string; agent?: string } } }>;
+  agents?: Record<string, { telegramTarget?: string; path?: string; description?: string; routes?: { telegram?: { target?: string }; herdr?: { paneId?: string; workspaceId?: string; expectedCwd?: string; agent?: string } } }>;
   protocol?: { secretEnv?: string };
   transport?: { default?: "telegram" | "herdr"; fallbackOrder?: string[]; [key: string]: unknown };
   compaction?: { enabled?: boolean; afterCompletedTasks?: number; contextPercent?: number };
@@ -457,15 +457,16 @@ export default function flockyAgentProtocol(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", (event) => {
     if (!store) return;
+    const ownerInstructions = config && agentId === config.project?.id ? configuredStreamInstructions(config) : "";
     const parsed = parseEnvelope(event.prompt);
     if (parsed?.fields.type === "task") {
       activeTaskId = parsed.fields.task_id;
       latestAnswer = "";
-      store.startTask(activeTaskId);
-      return { systemPrompt: `${event.systemPrompt}\n\nThis is an active delegated Flocky task. Before ending, call flocky_complete exactly once with the validated terminal outcome. Keep any answer-back compact and put long detail in repo artifacts such as files, docs, or commit history. A successful prose answer without flocky_complete will be reported as unverified partial.` };
+      return { systemPrompt: `${event.systemPrompt}${ownerInstructions}\n\nThis is an active delegated Flocky task. Before ending, call flocky_complete exactly once with the validated terminal outcome. Keep any answer-back compact and put long detail in repo artifacts such as files, docs, or commit history. A successful prose answer without flocky_complete will be reported as unverified partial.` };
     } else {
       activeTaskId = undefined;
       latestAnswer = "";
+      return ownerInstructions ? { systemPrompt: `${event.systemPrompt}${ownerInstructions}` } : undefined;
     }
   });
 
@@ -791,6 +792,14 @@ function transportFor(config: Config, agent: string): "telegram" | "herdr" | und
     if ((candidate === "telegram" || candidate === "herdr") && routeFor(config, agent, candidate)) return candidate;
   }
   return undefined;
+}
+
+function configuredStreamInstructions(config: Config): string {
+  const ownerId = config.project?.id;
+  const streams = Object.entries(config.agents ?? {}).filter(([id]) => id !== ownerId);
+  if (!streams.length) return "";
+  const list = streams.map(([id, stream]) => `- ${id}${stream.description ? `: ${stream.description}` : ""}`).join("\n");
+  return `\n\nConfigured Flocky streams:\n${list}\n\nWhen the user addresses one of these stream IDs (for example, “send hi to stream-a”), use flocky_dispatch for a direct durable task or flocky_delegate for repository work. Do not use the Telegram skill or manually compose an envelope for a configured stream; Flocky chooses its configured transport.`;
 }
 
 function routeFor(config: Config, agent: string, transport: string | undefined): any {

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
+import { applyAttachments, planAttachments } from "./attachment.mjs";
 
 export async function ensureOnboarded(pi, ctx) {
   const configPath = join(ctx.cwd, "flocky.config.json");
@@ -52,9 +53,31 @@ export async function ensureOnboarded(pi, ctx) {
   }
   // Save any routes collected above, or retain the core configuration after a failure.
   writeConfig(configPath, config);
+  if (transport !== "herdr") await attachInitialStreams(ctx, config);
   writeProjectDescription(ctx.cwd, projectId, description, config.agents);
   updateOwnerAgentsFile(ctx.cwd, readFileSync(join(ctx.cwd, "templates", "project-owner-AGENTS.md"), "utf8"));
   ctx.ui.notify("Flocky onboarding complete. Protocol routing is now active.", "info");
+  return true;
+}
+
+async function attachInitialStreams(ctx, config) {
+  const streamIds = Object.keys(config.agents).filter((id) => id !== config.project.id);
+  if (!streamIds.length) return true;
+  const review = planAttachments({ ownerCwd: ctx.cwd, config, streamIds });
+  const preview = [
+    ...review.plans.map((plan) => `${plan.streamId}:\n${plan.actions.map((item) => `• ${item.action}: ${item.path}`).join("\n")}`),
+    ...(review.errors.length ? [`Problems:\n${review.errors.map(({ streamId, error }) => `• ${streamId}: ${error}`).join("\n")}`] : []),
+  ].join("\n\n");
+  if (review.errors.length) {
+    ctx.ui.notify(`Streams were registered but could not be attached yet:\n${preview}`, "warning");
+    return false;
+  }
+  if (!await ctx.ui.confirm("Attach configured streams now?", `${preview}\n\nAttachment installs the Flocky extension, stream-local configuration, and a managed AGENTS.md block in each stream repository.`)) {
+    ctx.ui.notify("Streams were registered but not attached. Use /attach-stream or /attach-streams later.", "warning");
+    return false;
+  }
+  const attached = applyAttachments({ ownerCwd: ctx.cwd, config, streamIds });
+  ctx.ui.notify(`Attached ${attached.length} configured stream(s). Restart Pi in already-running stream repositories to activate Flocky.`, "info");
   return true;
 }
 
@@ -81,6 +104,7 @@ async function configureHerdrRoutes(pi, ctx, config) {
   if (ownerPane && await ctx.ui.confirm("Save the project-owner Herdr route?", `${ownerPane.pane_id} — ${ownerPane.cwd}`)) {
     config.agents[config.project.id].routes = { herdr: routeFromPane(ownerPane) };
   }
+  const attached = await attachInitialStreams(ctx, config);
   const missing = [];
   for (const [id, agent] of Object.entries(config.agents)) {
     if (id === config.project.id) continue;
@@ -92,6 +116,10 @@ async function configureHerdrRoutes(pi, ctx, config) {
     }
   }
   if (!missing.length) return;
+  if (!attached) {
+    ctx.ui.notify("Unattached streams will not be launched. Attach them first, then launch or discover their routes.", "warning");
+    return;
+  }
   const launch = await ctx.ui.confirm("Launch unmatched stream agents?", `${missing.map(([id]) => id).join(", ")} will each receive a dedicated Herdr workspace.`);
   if (!launch) return;
   for (const [id, agent] of missing) {
@@ -115,7 +143,13 @@ async function configureHerdrRoutes(pi, ctx, config) {
 async function herdr(pi, args) {
   const result = await pi.exec("herdr", args, { timeout: 35000 });
   if (result.code !== 0) throw new Error(result.stderr || `herdr ${args.join(" ")} failed`);
-  return JSON.parse(result.stdout);
+  return parseHerdrResponse(result.stdout);
+}
+
+// `herdr pane run` can intentionally succeed without a JSON receipt.
+export function parseHerdrResponse(stdout) {
+  const output = typeof stdout === "string" ? stdout.trim() : "";
+  return output ? JSON.parse(output) : {};
 }
 function routeFromPane(pane) { return { paneId: pane.pane_id, workspaceId: pane.workspace_id, expectedCwd: pane.cwd, agent: "pi", verifiedAt: new Date().toISOString() }; }
 function samePath(left, right) { return typeof left === "string" && resolve(left).toLowerCase() === resolve(right).toLowerCase(); }
