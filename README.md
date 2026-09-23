@@ -15,7 +15,7 @@ pi
 
 On its first TUI start, Flocky offers an onboarding wizard for the project description, streams, and default transport. It writes the ignored `flocky.config.json` and `projects/<project-id>/PROJECT.md` only after confirmation.
 
-Set `FLOCKY_PROTOCOL_SECRET` locally. Telegram projects also require `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`.
+Copy `.env.example` to `.env` and set `FLOCKY_PROTOCOL_SECRET` locally. `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are optional; set them only for Telegram transport projects.
 
 The Pi extension auto-loads from `.pi/extensions/flocky-agent-protocol/` after the project is trusted. It persists local task/outbox state in `.pi/flocky/flocky.db`, which is ignored by Git.
 
