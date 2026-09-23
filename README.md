@@ -54,12 +54,18 @@ The lower-level tools still exist when you want explicit control:
 ## Manage configured streams and routes
 
 ```text
+/flocky                         # overview (same as /flocky help)
+/flocky streams                 # stream-management help
+/flocky routes                  # route-management help
+
+/streams help
 /streams list
 /streams add
 /streams edit <stream-id>
 /streams remove <stream-id>
 /attach-stream <stream-id>
 
+/routes help
 /routes list
 /routes discover
 /routes verify

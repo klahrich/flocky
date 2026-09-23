@@ -7,15 +7,27 @@ type Agent = { path?: string; description?: string; routes?: { herdr?: any; tele
 type Config = { project: { id: string }; agents: Record<string, Agent> };
 
 export function registerFlockyCommands(pi: ExtensionAPI) {
+  pi.registerCommand("flocky", {
+    description: "Show Flocky command help",
+    handler: async (args, ctx) => {
+      const command = args.trim();
+      if (!command || command === "help") return ctx.ui.notify(flockyHelp(), "info");
+      if (command === "streams") return ctx.ui.notify(streamsHelp(), "info");
+      if (command === "routes") return ctx.ui.notify(routesHelp(), "info");
+      throw new Error("Usage: /flocky [help|streams|routes]");
+    },
+  });
+
   pi.registerCommand("streams", {
     description: "List, add, edit, or remove Flocky stream repositories",
     handler: async (args, ctx) => {
       const command = args.trim();
       if (!command || command === "list") return showStreams(ctx);
+      if (command === "help") return ctx.ui.notify(streamsHelp(), "info");
       if (command === "add") return addStream(ctx);
       if (command.startsWith("edit ")) return editStream(ctx, command.slice(5).trim());
       if (command.startsWith("remove ")) return removeStream(ctx, command.slice(7).trim());
-      throw new Error("Usage: /streams [list|add|edit <id>|remove <id>] (then /attach-stream <id>)");
+      throw new Error("Usage: /streams [help|list|add|edit <id>|remove <id>] (then /attach-stream <id>)");
     },
   });
 
@@ -55,10 +67,11 @@ export function registerFlockyCommands(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const command = args.trim();
       if (!command || command === "list") return showRoutes(ctx);
+      if (command === "help") return ctx.ui.notify(routesHelp(), "info");
       if (command === "discover") return discoverHerdrRoutes(pi, ctx);
       if (command === "verify") return verifyHerdrRoutes(pi, ctx);
       if (command.startsWith("remove ")) return removeRoute(ctx, command.slice(7).trim());
-      throw new Error("Usage: /routes [list|discover|verify|remove <stream-id> [herdr|telegram]]");
+      throw new Error("Usage: /routes [help|list|discover|verify|remove <stream-id> [herdr|telegram]]");
     },
   });
 }
@@ -174,6 +187,57 @@ async function removeRoute(ctx: any, args: string) {
   delete stream.routes[transport];
   save(ctx.cwd, config);
   ctx.ui.notify(`Removed ${transport} route for ${id}`, "info");
+}
+
+function flockyHelp() {
+  return [
+    "Flocky help",
+    "",
+    "Configuration",
+    "• /streams — list configured stream repositories",
+    "• /streams help — stream setup and management help",
+    "• /attach-stream <id> — preview and attach one registered stream",
+    "• /attach-streams [ids...] — preview and attach registered streams in bulk",
+    "",
+    "Transport routes",
+    "• /routes — list configured Herdr and Telegram routes",
+    "• /routes help — route discovery, verification, and removal help",
+    "",
+    "More help",
+    "• /flocky help — this overview",
+    "• /flocky streams — stream management help",
+    "• /flocky routes — route management help",
+    "",
+    "For dispatch, schedules, status, and transient workers, ask the owner agent; it uses the appropriate Flocky tool.",
+  ].join("\n");
+}
+
+function streamsHelp() {
+  return [
+    "Stream management",
+    "",
+    "• /streams or /streams list — show registered streams, paths, and descriptions",
+    "• /streams add — register an existing Git repository, then optionally attach Flocky to it",
+    "• /streams edit <id> — change a stream's repository path or description",
+    "• /streams remove <id> — remove its Flocky configuration and routes; its repository and Herdr workspace are kept",
+    "• /attach-stream <id> — preview and attach Flocky-managed files for one registered stream",
+    "• /attach-streams [id ...] — preview and attach all registered streams, or only the listed IDs",
+    "",
+    "A stream ID uses lowercase letters, digits, and hyphens. Stream repositories must already exist and be Git repositories.",
+  ].join("\n");
+}
+
+function routesHelp() {
+  return [
+    "Route management",
+    "",
+    "• /routes or /routes list — show saved Herdr and Telegram routes for every stream",
+    "• /routes discover — find matching Pi panes in managed Herdr workspaces and ask before saving each route",
+    "• /routes verify — check whether saved Herdr routes still point to matching Pi panes",
+    "• /routes remove <id> [herdr|telegram] — remove one saved route without removing the stream or repository",
+    "",
+    "Herdr discovery and verification require Pi to be running inside Herdr. Route changes are confirmation-gated.",
+  ].join("\n");
 }
 
 function renderAttachmentReview(review: { plans: any[]; errors: Array<{ streamId: string; error: string }> }) {

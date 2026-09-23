@@ -29,10 +29,6 @@ export async function ensureOnboarded(pi, ctx) {
     agents[id] = { path, description: streamDescription, routes: {} };
   }
 
-  if (Object.keys(agents).length === 1) {
-    ctx.ui.notify("Onboarding needs at least one stream; no configuration was written.", "warning");
-    return false;
-  }
   const transport = await ctx.ui.select("Default stream transport", ["herdr", "telegram"]);
   if (!transport) return false;
   const config = {
@@ -45,9 +41,16 @@ export async function ensureOnboarded(pi, ctx) {
     onboarding: { version: 1, completedAt: new Date().toISOString() },
   };
 
-  if (transport === "telegram") await collectTelegramRoutes(ctx, config);
-  if (transport === "herdr") await configureHerdrRoutes(pi, ctx, config);
-
+  // Persist the core project identity before optional route discovery/provisioning.
+  // A failed Herdr call must not discard a completed onboarding wizard.
+  writeConfig(configPath, config);
+  try {
+    if (transport === "telegram") await collectTelegramRoutes(ctx, config);
+    if (transport === "herdr") await configureHerdrRoutes(pi, ctx, config);
+  } catch (error) {
+    ctx.ui.notify(`Flocky was configured, but transport routes need attention: ${message(error)}`, "warning");
+  }
+  // Save any routes collected above, or retain the core configuration after a failure.
   writeConfig(configPath, config);
   writeProjectDescription(ctx.cwd, projectId, description, config.agents);
   updateOwnerAgentsFile(ctx.cwd, readFileSync(join(ctx.cwd, "templates", "project-owner-AGENTS.md"), "utf8"));
@@ -131,4 +134,5 @@ function updateOwnerAgentsFile(cwd, template) {
 }
 function escapeRegex(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
 function writeAtomic(file, content) { const temporary = `${file}.${process.pid}.tmp`; writeFileSync(temporary, content, "utf8"); renameSync(temporary, file); }
+function message(error) { return error instanceof Error ? error.message : String(error); }
 function basename(path) { return path.replace(/[\\/]$/, "").split(/[\\/]/).pop(); }
