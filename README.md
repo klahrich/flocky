@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/flocky-banner.svg" alt="Flocky — coordinating Pi agents across repositories" width="900">
+</p>
+
 # Flocky
 
 Flocky is a project-owner workspace for coordinating Pi agents across multiple existing Git repositories, called **streams**. One owner agent holds the project map and delegates repository work to durable stream agents or one-off transient Herdr workers.
@@ -180,3 +184,7 @@ Never paste a protocol secret, Telegram credential, or raw local configuration i
 ## Architecture
 
 Read [project_brief.md](project_brief.md) for the signed-envelope protocol, trust model, SQLite lifecycle, concurrency policy, and architecture rationale.
+
+## License
+
+Flocky is released under the [MIT License](LICENSE).
