@@ -34,6 +34,8 @@ A **stream** is always an existing Git repository. Flocky never creates or delet
 
 Copy `.env.example` to `.env` if you want to provide values manually. The two Telegram credentials are optional unless you select Telegram transport. If `FLOCKY_PROTOCOL_SECRET` is missing, TUI onboarding offers to generate a random local secret and save it in `.env`.
 
+> **Telegram chat (recommended):** Use [pi-telegram-plus](https://github.com/jalyfeng/pi-telegram-plus) to chat with and control Pi agents from Telegram, including interactive onboarding dialogs, file transfer, streamed output, and multi-instance switching. It is the user-facing Telegram bridge; Flocky's own Telegram transport separately carries signed owner-to-stream tasks and results. Follow Telegram+'s installation and compatibility guidance (it supports Pi `0.80.10`).
+
 ```bash
 git clone <this-repository> my-project-orchestrator
 cd my-project-orchestrator
